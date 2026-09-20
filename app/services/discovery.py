@@ -6,6 +6,7 @@ from app.integrations.providers import build_providers
 from app.schemas import DiscoveryResult, OpportunityIn, ProviderStats, SearchCriteria
 from app.scoring import score_opportunity
 from app.services.opportunities import upsert_opportunity
+from app.utils import canonicalize_url
 
 
 async def search_and_persist(
@@ -45,11 +46,12 @@ async def search_and_persist(
 
     applications = []
     seen_keys: set[tuple[str, str, str]] = set()
+    seen_urls: set[str] = set()
 
     for opportunity in fetched:
         provider_key = opportunity.source.split(":")[0].lower()
 
-        # Cross-fetch deduplication
+        # Cross-fetch deduplication by company, title, location
         key = (
             opportunity.company.strip().lower(),
             opportunity.title.strip().lower(),
@@ -59,7 +61,16 @@ async def search_and_persist(
             duplicates_ignored += 1
             provider_dup_counts[provider_key] += 1
             continue
+
+        # Cross-fetch deduplication by canonical URL
+        canon_url = canonicalize_url(str(opportunity.url))
+        if canon_url in seen_urls:
+            duplicates_ignored += 1
+            provider_dup_counts[provider_key] += 1
+            continue
+
         seen_keys.add(key)
+        seen_urls.add(canon_url)
 
         score = score_opportunity(opportunity, criteria)
 
