@@ -45,6 +45,7 @@ async def search_and_persist(
     provider_low_counts: dict[str, int] = defaultdict(int)
 
     applications = []
+    new_application_ids: set[int] = set()
     seen_keys: set[tuple[str, str, str]] = set()
     seen_urls: set[str] = set()
 
@@ -117,6 +118,7 @@ async def search_and_persist(
         if was_created:
             new_opportunities += 1
             provider_new_counts[provider_key] += 1
+            new_application_ids.add(application.id)
         else:
             duplicates_ignored += 1
             provider_dup_counts[provider_key] += 1
@@ -174,5 +176,6 @@ async def search_and_persist(
         remote_count=remote_count,
         other_countries_count=other_countries_count,
         provider_stats=provider_stats,
+        new_application_ids=new_application_ids,
         applications=applications,
     )

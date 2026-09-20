@@ -143,10 +143,11 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
                     print(f"  - {p_name}: {err}")
 
             if result.applications:
-                print("\n🏆 Top Discovered Opportunities:")
+                print("\n🏆 Top Qualified Opportunities Evaluated This Run (New + Existing):")
                 for i, app in enumerate(result.applications[:10], 1):
+                    status_badge = "[NEW]" if app.id in result.new_application_ids else "[EXISTING]"
                     cat_badge = f"[{app.relevance_category}] " if app.relevance_category else ""
-                    print(f"  {i}. {cat_badge}{app.company} - {app.position} (Score: {app.score})")
+                    print(f"  {i}. {status_badge} {cat_badge}{app.company} - {app.position} (Score: {app.score})")
                     print(f"     URL: {app.job_url}")
 
         print("\n✅ Discovery run completed successfully.")

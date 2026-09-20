@@ -150,6 +150,7 @@ class DiscoveryResult(BaseModel):
     remote_count: int
     other_countries_count: int = 0
     provider_stats: list[ProviderStats] = Field(default_factory=list)
+    new_application_ids: set[int] = Field(default_factory=set)
     applications: list[ApplicationOut]
 
 

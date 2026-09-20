@@ -17,16 +17,16 @@ class RelevanceCategory(str, Enum):
 
 TIER_SCORE_BOUNDS = {
     RelevanceCategory.EXPLICIT_PFE: (75, 100),
-    RelevanceCategory.EXPLICIT_INTERNSHIP: (60, 74),
-    RelevanceCategory.GRADUATE: (45, 59),
-    RelevanceCategory.JUNIOR: (35, 44),
-    RelevanceCategory.FULL_TIME: (20, 34),
+    RelevanceCategory.EXPLICIT_INTERNSHIP: (75, 100),
+    RelevanceCategory.GRADUATE: (55, 74),
+    RelevanceCategory.JUNIOR: (40, 54),
+    RelevanceCategory.FULL_TIME: (25, 39),
     RelevanceCategory.SENIOR: (0, 19),
 }
 
 TIER_RANK = {
     RelevanceCategory.EXPLICIT_PFE: 1,
-    RelevanceCategory.EXPLICIT_INTERNSHIP: 2,
+    RelevanceCategory.EXPLICIT_INTERNSHIP: 1,
     RelevanceCategory.GRADUATE: 3,
     RelevanceCategory.JUNIOR: 4,
     RelevanceCategory.FULL_TIME: 5,
@@ -123,6 +123,24 @@ JUNIOR_PATTERNS = [
     re.compile(r"\b0-2\s*(?:year|years|ans?)\b", re.IGNORECASE),
     re.compile(r"\b1\s*à\s*2\s*ans?\b", re.IGNORECASE),
     re.compile(r"\b1\s*to\s*2\s*years?\b", re.IGNORECASE),
+]
+
+# ---------------------------------------------------------------------------
+# Non-technical domain patterns for demotion
+# ---------------------------------------------------------------------------
+NON_TECHNICAL_PATTERNS = [
+    re.compile(r"\b(?:juriste|legal|droit)\b", re.IGNORECASE),
+    re.compile(r"\b(?:affaires?\s+publiques|public\s+affairs)\b", re.IGNORECASE),
+    re.compile(r"\b(?:account\s+manage(?:ment|r)|chargé[es]?\s+d['’]?affaires?|grands?\s+comptes?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:sales|commercial[es]?|prospection|vendeur)\b", re.IGNORECASE),
+    re.compile(r"\b(?:business\s+development|bdr|sdr)\b", re.IGNORECASE),
+    re.compile(r"\b(?:marketing|communication|réseaux\s+sociaux|social\s+media|brand)\b", re.IGNORECASE),
+    re.compile(r"\b(?:planne?ur[es]?\s+stratégique|strategic\s+plann?ing)\b", re.IGNORECASE),
+    re.compile(r"\b(?:event\s+operations?|événementiel|events?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:hr|human\s+resources|ressources\s+humaines|recrutement|recruiter|recruiting|talent)\b", re.IGNORECASE),
+    re.compile(r"\b(?:finance|accounting|comptabilité|comptable|audit)\b", re.IGNORECASE),
+    re.compile(r"\b(?:achats|procurement|approvisionneur|acheteur)\b", re.IGNORECASE),
+    re.compile(r"\b(?:hospitality|receptionist|hôte(?:sse)?)\b", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------
@@ -321,37 +339,33 @@ TECH_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Technical relevance patterns & helper
+# Technical relevance patterns & hierarchy
 # ---------------------------------------------------------------------------
 
-HIGH_TECH_PATTERNS = [
-    # .NET / C#
+HIGH_TECH_TITLE_PATTERNS = [
+    re.compile(r"(?:\bsoftware\s+(?:engineer(?:ing)?|developer|dev)\b|\bd[eé]veloppeur\b|\bdeveloper\b|\bengineer\b|\bing[eé]nieur\b|\bbackend\b|\bback-end\b|\bfrontend\b|\bfront-end\b|\bfull\s*stack\b|\bfullstack\b|\bweb\s+developer\b|\bmobile\s+developer\b|\barchitecte\s+logiciel\b|\bsdet\b)", re.IGNORECASE),
+    re.compile(r"(?:\.net\b|\bdotnet\b|c#|\bc-sharp\b|\basp\.net\b|\bjava\b|\bspring\b|\bpython\b|\bphp\b|\bsymfony\b|\breact\b|\bangular\b|\bnode\b)", re.IGNORECASE),
+    re.compile(r"(?:\bdevops\b|\bqa\b|\bquality\s+assurance\b|\btest\s+automation\b|\bautomatisation\s+des?\s+tests?\b|\bdata\s+engineer(?:ing)?\b|\bcloud\s+engineer(?:ing)?\b)", re.IGNORECASE),
+    re.compile(r"(?:\bsolutions?\s+engineer\b|\bsales\s+engineer\b|\btechnical\s+account\b|\bdevops\s+consultant\b|\btechnical\s+product\b)", re.IGNORECASE),
+]
+
+HIGH_TECH_BODY_PATTERNS = [
     re.compile(r"(?:\.net\b|\bdotnet\b|c#|\bc-sharp\b|\basp\.net\b|\bentity\s+framework\b|\bef\s+core\b|\bblazor\b)", re.IGNORECASE),
-    # Java
     re.compile(r"(\bjava\b|\bspring\b|\bspring\s*boot\b|\bhibernate\b|\bj2ee\b|\bmaven\b|\bgradle\b)", re.IGNORECASE),
-    # Python
     re.compile(r"(\bpython\b|\bdjango\b|\bfastapi\b|\bflask\b|\bpytest\b|\bpandas\b|\bnumpy\b)", re.IGNORECASE),
-    # JS / TS / Web
-    re.compile(r"(?:\bnode(?:\.js)?\b|\breact(?:\.js)?\b|\bangular(?:\.js)?\b|\bvue(?:\.js)?\b|\bjavascript\b|\btypescript\b|\bexpress(?:\.js)?\b|\bnest(?:\.js)?\b|\bnext(?:\.js)?\b|\bhtml\b|\bcss\b)", re.IGNORECASE),
-    # PHP
+    re.compile(r"(?:\bnode(?:\.js)?\b|\breact(?:\.js)?\b|\bangular(?:\.js)?\b|\bvue(?:\.js)?\b|\bjavascript\b|\btypescript\b|\bexpress(?:\.js)?\b|\bnest(?:\.js)?\b|\bnext(?:\.js)?\b)", re.IGNORECASE),
     re.compile(r"(\bphp\b|\bsymfony\b|\blaravel\b)", re.IGNORECASE),
-    # Other languages
     re.compile(r"(\bc\+\+\b|\bgolang\b|\bgo\s+language\b|\brust\b|\bruby\b|\brails\b|\bflutter\b|\breact\s+native\b|\bkotlin\b|\bswift\b)", re.IGNORECASE),
-    # Databases
     re.compile(r"(?:\bsql\b|\bpostgresql\b|\bpostgres\b|\bmysql\b|\bmongodb\b|\boracle\b|\bsql\s+server\b|\bt-sql\b|\bpl/sql\b|\bredis\b|\belasticsearch\b)", re.IGNORECASE),
-    # DevOps / Cloud
     re.compile(r"(?:\bdocker\b|\bkubernetes\b|\bk8s\b|\bdevops\b|\bci/cd\b|\bjenkins\b|\bgitlab\b|\bgithub\s+actions\b|\bterraform\b|\bansible\b|\baws\b|\bazure\b|\bgcp\b)", re.IGNORECASE),
-    # QA / Testing
     re.compile(r"(?:\bqa\b|\bquality\s+assurance\b|\btest\s+automation\b|\bautomatisation\s+des?\s+tests?\b|\bselenium\b|\bcypress\b|\bplaywright\b|\bpostman\b|\btesteur\b)", re.IGNORECASE),
-    # Data / AI / ML
     re.compile(r"(?:\bdata\s+engineering?\b|\bdata\s+scienc(?:e|tist)\b|\bmachine\s+learning\b|\bdeep\s+learning\b|\bai\s+engineer\b|\bintelligence\s+artificielle\b|\bbig\s+data\b|\betl\b|\bspark\b)", re.IGNORECASE),
-    # Core Engineering roles
     re.compile(r"(?:\bsoftware\s+(?:engineer(?:ing)?|developer|dev)\b|\bd[eé]veloppeur\b|\bdeveloper\b|\bengineer\b|\bing[eé]nieur\b|\bbackend\b|\bback-end\b|\bfrontend\b|\bfront-end\b|\bfull\s*stack\b|\bfullstack\b|\bweb\s+developer\b|\bmobile\s+developer\b|\barchitecte\s+logiciel\b)", re.IGNORECASE),
 ]
 
 MEDIUM_TECH_PATTERNS = [
     re.compile(r"(?:\binformatique\b|\binformation\s+technology\b|\bit\b|\bsyst[eè]mes?\s+d['’]informations?\b|\bsi\b|\bt[eé]l[eé]com\b|\br[eé]seau(?:x)?\s+(?:informatique|t[eé]l[eé]com|sans\s+fil|local|entreprise|d'entreprise)\b|\bnetwork(?:s|ing)?\b|\bsupport\s+it\b)", re.IGNORECASE),
-    re.compile(r"(?:\bweb\b|\bdatabase\b|\bbase\s+de\s+donn[eé]es\b|\bapi\b|\brest\b|\bgit\b|\bagile\b|\bscrum\b)", re.IGNORECASE),
+    re.compile(r"(?:\bdatabase\b|\bbase\s+de\s+donn[eé]es\b|\bapi\b|\brest\b|\bgit\b|\bagile\b|\bscrum\b)", re.IGNORECASE),
 ]
 
 FRONTEND_CODE_PATTERNS = [
@@ -369,37 +383,46 @@ def _calculate_technical_relevance(title: str, description: str, full_text: str)
     full_lower = full_text.lower()
     notes: list[str] = []
 
-    # Handle UI/UX special case: pure design vs frontend code
+    # 1. Non-technical domain title demotion check
+    is_non_tech_domain = any(pat.search(title_lower) for pat in NON_TECHNICAL_PATTERNS)
+    title_has_high_tech = any(pat.search(title_lower) for pat in HIGH_TECH_TITLE_PATTERNS)
+
+    if is_non_tech_domain and not title_has_high_tech:
+        notes.append("Low technical relevance: non-technical domain title")
+        return "LOW", 0, notes
+
+    # 2. UI/UX design check
     has_ui_ux = any(pat.search(title_lower) or pat.search(desc_lower) for pat in UI_UX_PATTERNS)
     has_frontend_code = any(pat.search(title_lower) or pat.search(desc_lower) for pat in FRONTEND_CODE_PATTERNS)
-
     if has_ui_ux and not has_frontend_code:
         notes.append("Pure UI/UX design without code keywords")
         return "LOW", 0, notes
 
+    # 3. Technical score evaluation with title priority
     tech_score = 0
     high_matches = 0
 
-    for pat in HIGH_TECH_PATTERNS:
-        if pat.search(title_lower):
-            tech_score += 35
-            high_matches += 1
+    if title_has_high_tech:
+        tech_score += 40
+        high_matches += 1
 
-    for pat in HIGH_TECH_PATTERNS:
-        if pat.search(full_lower):
-            tech_score += 20
-            high_matches += 1
+    body_high_matches = 0
+    for pat in HIGH_TECH_BODY_PATTERNS:
+        if pat.search(desc_lower):
+            tech_score += 15
+            body_high_matches += 1
 
     medium_matches = 0
     for pat in MEDIUM_TECH_PATTERNS:
         if pat.search(full_lower):
-            tech_score += 10
+            tech_score += 5
             medium_matches += 1
 
-    if tech_score >= 25 or high_matches >= 1:
+    # 4. Final level classification
+    if title_has_high_tech or body_high_matches >= 2 or (body_high_matches >= 1 and not is_non_tech_domain):
         level = "HIGH"
-        notes.append(f"High technical relevance ({high_matches} tech matches)")
-    elif tech_score >= 10 or medium_matches >= 1:
+        notes.append(f"High technical relevance ({high_matches + body_high_matches} tech matches)")
+    elif body_high_matches >= 1 or medium_matches >= 1:
         level = "MEDIUM"
         notes.append("Medium/ambiguous technical relevance (general IT/sys intent)")
     else:
@@ -513,7 +536,7 @@ def map_score_to_tier(
             min_s, max_s = (35, 49)
     else:  # LOW
         if category in (RelevanceCategory.EXPLICIT_PFE, RelevanceCategory.EXPLICIT_INTERNSHIP):
-            min_s, max_s = (15, 45)
+            min_s, max_s = (15, 39)
         elif category in (RelevanceCategory.GRADUATE, RelevanceCategory.JUNIOR):
             min_s, max_s = (15, 34)
         elif category == RelevanceCategory.FULL_TIME:
@@ -575,6 +598,16 @@ def score_opportunity(
     raw_score += _score_terms(full_text, LOCATION_TERMS, hits, "location")
     raw_score += _score_terms(full_text, SENIORITY_PENALTIES, hits, "seniority")
 
+    tech_level, tech_score, tech_notes = _calculate_technical_relevance(title, description, full_text)
+    hits.extend(tech_notes)
+
+    # Apply Non-Technical Domain Penalty if title matches non-technical patterns
+    is_non_tech_domain = any(pat.search(title) for pat in NON_TECHNICAL_PATTERNS)
+    title_has_high_tech = any(pat.search(title) for pat in HIGH_TECH_TITLE_PATTERNS)
+    if is_non_tech_domain and not title_has_high_tech:
+        raw_score -= 30
+        hits.append("-30 non-technical domain penalty")
+
     if YEARS_RE.search(full_text):
         raw_score -= 18
         hits.append("-18 experience requirement")
@@ -625,9 +658,6 @@ def score_opportunity(
         hits.append(f"⚠️ Visa/Auth Warning: {warning}")
 
     lang = detect_language(full_text)
-
-    tech_level, tech_score, tech_notes = _calculate_technical_relevance(title, description, full_text)
-    hits.extend(tech_notes)
 
     final_score = map_score_to_tier(raw_score, category, tech_level=tech_level)
     hits.append(f"Category: {category.value} (tech: {tech_level}, score {final_score})")
@@ -685,6 +715,3 @@ def _score_terms(text: str, terms: dict[str, int], hits: list[str], category: st
             sign = "+" if weight > 0 else ""
             hits.append(f"{sign}{weight} {category}: {term}")
     return score
-
-
-

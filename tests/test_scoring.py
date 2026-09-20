@@ -229,20 +229,20 @@ def test_relevance_category_tier_bounds_and_ranking() -> None:
         ("Stage de fin d'études - Développeur Full Stack", "Paris", "Stage 6 mois Python", "EXPLICIT_PFE", 75, 100),
         ("Internship - Software Engineer (PFE)", "Rabat", "Final year project", "EXPLICIT_PFE", 75, 100),
         
-        # Explicit Internship (60..74)
-        ("Stage Développeur Java/Spring", "Casablanca", "Stage de 5 mois", "EXPLICIT_INTERNSHIP", 60, 74),
-        ("Software Engineering Intern", "Remote", "Internship role for summer/fall", "EXPLICIT_INTERNSHIP", 60, 74),
+        # Explicit Internship (75..100 for HIGH tech relevance)
+        ("Stage Développeur Java/Spring", "Casablanca", "Stage de 5 mois", "EXPLICIT_INTERNSHIP", 75, 100),
+        ("Software Engineering Intern", "Remote", "Internship role for summer/fall", "EXPLICIT_INTERNSHIP", 75, 100),
 
-        # Graduate (45..59)
-        ("Graduate Software Engineer", "Paris", "New grad program, 0-1 year exp", "GRADUATE", 45, 59),
-        ("Développeur Jeune Diplômé", "Lyon", "Poste pour débutant M2", "GRADUATE", 45, 59),
+        # Graduate (55..74)
+        ("Graduate Software Engineer", "Paris", "New grad program, 0-1 year exp", "GRADUATE", 55, 74),
+        ("Développeur Jeune Diplômé", "Lyon", "Poste pour débutant M2", "GRADUATE", 55, 74),
 
-        # Junior (35..44)
-        ("Junior Backend Developer", "Casablanca", "1-2 years experience required", "JUNIOR", 35, 44),
+        # Junior (40..54)
+        ("Junior Backend Developer", "Casablanca", "1-2 years experience required", "JUNIOR", 40, 54),
 
-        # Full Time (20..34)
-        ("Software Engineer II - Java/Python", "Remote", "Canonical runs internship and stage programs", "FULL_TIME", 20, 34),
-        ("Full-time Backend Developer (CDI)", "Paris", "CDI position for software dev", "FULL_TIME", 20, 34),
+        # Full Time (25..39)
+        ("Software Engineer II - Java/Python", "Remote", "Canonical runs internship and stage programs", "FULL_TIME", 25, 39),
+        ("Full-time Backend Developer (CDI)", "Paris", "CDI position for software dev", "FULL_TIME", 25, 39),
 
         # Senior (0..19)
         ("Senior Software Engineer (Backend)", "Paris", "Canonical runs internship and stage programs", "SENIOR", 0, 19),
