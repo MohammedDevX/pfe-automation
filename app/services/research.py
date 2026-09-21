@@ -89,23 +89,40 @@ async def research_application(
     request: ResearchRequest,
     settings: Settings,
 ) -> ResearchResult:
+    from datetime import datetime, timezone
+    from app.integrations.research_providers import build_research_providers, extract_technology_signals
+    from app.models import ApplicationStatus
+
     company = get_or_create_company(db, application, str(request.website) if request.website else None)
     application.company_id = company.id
     db.flush()
 
-    from app.integrations.research_providers import build_research_providers
+    # 1. Base technology signals from opportunity position & description
+    job_tech_signals = extract_technology_signals(f"{application.position} {application.description or ''}")
+    meta: dict = dict(company.metadata_json or {})
+    
+    # 2. Base sources provenance
+    sources: list[dict] = list(meta.get("sources") or [])
+    if application.job_url:
+        if not any(s.get("url") == application.job_url for s in sources):
+            sources.append({
+                "type": "job_source",
+                "url": application.job_url,
+                "confidence": "high",
+            })
+    if company.website and not any(s.get("url") == company.website for s in sources):
+        sources.append({
+            "type": "official_website",
+            "url": company.website,
+            "confidence": "high",
+        })
 
+    all_tech_signals: set[str] = set(job_tech_signals) | set(meta.get("technology_signals") or [])
     provider_errors: list[str] = []
-    for provider in build_research_providers(request, settings):
-        try:
-            result = await provider.research(company, application)
-        except RuntimeError as exc:
-            provider_errors.append(str(exc))
-            continue
-        except Exception as exc:
-            provider_errors.append(f"{provider.name} failed: {exc}")
-            continue
+    initial_website = company.website
+    website_crawled = False
 
+    def _apply_result(result) -> None:
         if result.website and not company.website:
             company.website = result.website
         if result.linkedin_url and not company.linkedin_url:
@@ -114,14 +131,68 @@ async def research_application(
             company.description = result.description
         if result.location and not company.location:
             company.location = result.location
+
+        if getattr(result, "careers_url", None) and not meta.get("careers_url"):
+            meta["careers_url"] = result.careers_url
+        if getattr(result, "industry", None) and not meta.get("industry"):
+            meta["industry"] = result.industry
+
+        if getattr(result, "technology_signals", None):
+            all_tech_signals.update(result.technology_signals)
+
+        if getattr(result, "sources", None):
+            for src in result.sources:
+                if not any(s.get("url") == src.get("url") and s.get("type") == src.get("type") for s in sources):
+                    sources.append(src)
+
         if result.metadata:
-            company.metadata_json = {**(company.metadata_json or {}), **result.metadata}
+            for k, v in result.metadata.items():
+                if k not in meta:
+                    meta[k] = v
 
         for candidate in result.contacts:
             upsert_contact(db, company, candidate)
         for candidate in result.emails:
             if candidate.kind != EmailKind.none:
                 upsert_email(db, company, candidate)
+
+    # 3. Execute providers in configured priority order
+    for provider in build_research_providers(request, settings):
+        try:
+            result = await provider.research(company, application)
+            if provider.name == "public_website":
+                website_crawled = bool(company.website)
+        except RuntimeError as exc:
+            provider_errors.append(str(exc))
+            if provider.name == "public_website":
+                website_crawled = True
+            continue
+        except Exception as exc:
+            provider_errors.append(f"{provider.name} failed: {exc}")
+            if provider.name == "public_website":
+                website_crawled = True
+            continue
+
+        _apply_result(result)
+
+    # 4. If website was newly discovered (e.g. via web search) and not yet crawled by PublicWebsiteProvider
+    if company.website and (not initial_website and not website_crawled) and ("public_website" in request.providers or getattr(request, "include_web_search", False)):
+        from app.integrations.research_providers import PublicWebsiteProvider
+        try:
+            web_result = await PublicWebsiteProvider().research(company, application)
+            _apply_result(web_result)
+        except Exception as exc:
+            provider_errors.append(f"public_website chained enrichment failed: {exc}")
+
+    # 5. Finalize company metadata & provenance
+    meta["technology_signals"] = sorted(all_tech_signals)
+    meta["sources"] = sources
+    meta["research_timestamp"] = datetime.now(timezone.utc).isoformat()
+    company.metadata_json = meta
+
+    # 6. Transition application status to researched if discovered/qualified
+    if application.application_status in (ApplicationStatus.discovered, ApplicationStatus.qualified):
+        application.application_status = ApplicationStatus.researched
 
     db.commit()
     db.refresh(company)
@@ -161,7 +232,13 @@ def infer_company_website(job_url: str) -> str | None:
         return None
     parsed = urlparse(job_url)
     domain = parsed.netloc.lower().removeprefix("www.")
-    if not domain or any(blocked in domain for blocked in ("adzuna", "greenhouse", "lever.co", "notion.so")):
+    blocked_domains = (
+        "adzuna", "greenhouse", "lever.co", "notion.so", "indeed", "linkedin",
+        "welcometothejungle", "stagiaires.ma", "rekrute", "hellowork", "glassdoor",
+        "monster", "talent.com", "jobteaser", "smartrecruiters", "workable",
+        "ashbyhq", "recruitee", "teamtailor"
+    )
+    if not domain or any(blocked in domain for blocked in blocked_domains):
         return None
     return f"{parsed.scheme}://{domain}"
 

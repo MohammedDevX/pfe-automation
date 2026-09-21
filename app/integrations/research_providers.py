@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import re
 from urllib.parse import urljoin, urlparse
 
@@ -18,13 +19,90 @@ from app.services.research import (
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 
+CAREERS_PATH_PATTERNS = [
+    re.compile(r'href=["\']([^"\']*(?:careers|jobs|recrutement|career|offres-emploi|join-us|emplois|we-are-hiring)[^"\']*)["\']', re.IGNORECASE),
+]
+
+AGGREGATOR_DOMAINS = frozenset({
+    "indeed.com", "indeed.fr", "glassdoor.com", "glassdoor.fr", "linkedin.com",
+    "welcometothejungle.com", "hellowork.com", "monster.com", "monster.fr",
+    "talent.com", "stepstone.de", "rekrute.com", "emploidakar.com",
+    "marocannonces.com", "stagiaires.ma", "jobteaser.com", "cadremploi.fr",
+    "apec.fr", "wikipedia.org", "facebook.com", "twitter.com", "x.com",
+    "instagram.com", "youtube.com", "crunchbase.com", "pagesjaunes.fr",
+    "societe.com", "verif.com", "kompass.com", "yellowpages.com",
+})
+
+TECH_SIGNAL_PATTERNS = [
+    (re.compile(r"(?:\.net\s+core|\.net\b|\bdotnet\b)", re.IGNORECASE), ".NET"),
+    (re.compile(r"(?:c#|\bc-sharp\b)", re.IGNORECASE), "C#"),
+    (re.compile(r"\basp\.net(?:\s+core)?\b", re.IGNORECASE), "ASP.NET Core"),
+    (re.compile(r"\bspring\s*boot\b", re.IGNORECASE), "Spring Boot"),
+    (re.compile(r"\bjava\b", re.IGNORECASE), "Java"),
+    (re.compile(r"\bpython\b", re.IGNORECASE), "Python"),
+    (re.compile(r"\bfastapi\b", re.IGNORECASE), "FastAPI"),
+    (re.compile(r"\bdjango\b", re.IGNORECASE), "Django"),
+    (re.compile(r"\bflask\b", re.IGNORECASE), "Flask"),
+    (re.compile(r"\bnode(?:\.js)?\b", re.IGNORECASE), "Node.js"),
+    (re.compile(r"\btypescript\b", re.IGNORECASE), "TypeScript"),
+    (re.compile(r"\bjavascript\b", re.IGNORECASE), "JavaScript"),
+    (re.compile(r"\breact(?:\.js)?\b", re.IGNORECASE), "React"),
+    (re.compile(r"\bangular(?:\.js)?\b", re.IGNORECASE), "Angular"),
+    (re.compile(r"\bvue(?:\.js)?\b", re.IGNORECASE), "Vue.js"),
+    (re.compile(r"\bnext(?:\.js)?\b", re.IGNORECASE), "Next.js"),
+    (re.compile(r"\bphp\b", re.IGNORECASE), "PHP"),
+    (re.compile(r"\bsymfony\b", re.IGNORECASE), "Symfony"),
+    (re.compile(r"\blaravel\b", re.IGNORECASE), "Laravel"),
+    (re.compile(r"\bgolang\b|\bgo\s+language\b", re.IGNORECASE), "Go"),
+    (re.compile(r"\brust\b", re.IGNORECASE), "Rust"),
+    (re.compile(r"\bpostgresql\b|\bpostgres\b", re.IGNORECASE), "PostgreSQL"),
+    (re.compile(r"\bmysql\b", re.IGNORECASE), "MySQL"),
+    (re.compile(r"\bmongodb\b", re.IGNORECASE), "MongoDB"),
+    (re.compile(r"\bredis\b", re.IGNORECASE), "Redis"),
+    (re.compile(r"\bsql\b", re.IGNORECASE), "SQL"),
+    (re.compile(r"\bdocker\b", re.IGNORECASE), "Docker"),
+    (re.compile(r"\bkubernetes\b|\bk8s\b", re.IGNORECASE), "Kubernetes"),
+    (re.compile(r"\bdevops\b", re.IGNORECASE), "DevOps"),
+    (re.compile(r"\bci/cd\b", re.IGNORECASE), "CI/CD"),
+    (re.compile(r"\baws\b|\bamazon\s+web\s+services\b", re.IGNORECASE), "AWS"),
+    (re.compile(r"\bazure\b", re.IGNORECASE), "Azure"),
+    (re.compile(r"\bgcp\b|\bgoogle\s+cloud\b", re.IGNORECASE), "GCP"),
+    (re.compile(r"\bkafka\b", re.IGNORECASE), "Kafka"),
+    (re.compile(r"\bgraphql\b", re.IGNORECASE), "GraphQL"),
+    (re.compile(r"\bqa\b|\bquality\s+assurance\b|\btest\s+automation\b", re.IGNORECASE), "QA / Testing"),
+    (re.compile(r"\bselenium\b", re.IGNORECASE), "Selenium"),
+    (re.compile(r"\bcypress\b", re.IGNORECASE), "Cypress"),
+    (re.compile(r"\bplaywright\b", re.IGNORECASE), "Playwright"),
+    (re.compile(r"\bpytorch\b", re.IGNORECASE), "PyTorch"),
+    (re.compile(r"\btensorflow\b", re.IGNORECASE), "TensorFlow"),
+    (re.compile(r"\bmachine\s+learning\b|\bdeep\s+learning\b", re.IGNORECASE), "Machine Learning"),
+    (re.compile(r"\bdata\s+engineering\b", re.IGNORECASE), "Data Engineering"),
+]
+
+
+def extract_technology_signals(text: str) -> list[str]:
+    """Extract recognized technology names from text deterministically."""
+    if not text:
+        return []
+    signals: list[str] = []
+    seen: set[str] = set()
+    for pattern, name in TECH_SIGNAL_PATTERNS:
+        if pattern.search(text) and name not in seen:
+            seen.add(name)
+            signals.append(name)
+    return signals
+
 
 @dataclass
 class ProviderResearchResult:
     website: str | None = None
+    careers_url: str | None = None
     linkedin_url: str | None = None
     location: str | None = None
     description: str | None = None
+    industry: str | None = None
+    technology_signals: list[str] = field(default_factory=list)
+    sources: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     contacts: list[ContactCandidate] = field(default_factory=list)
     emails: list[EmailCandidate] = field(default_factory=list)
@@ -58,7 +136,48 @@ class PublicWebsiteProvider(ResearchProvider):
                     continue
 
                 text = response.text
-                result.linkedin_url = result.linkedin_url or _first_linkedin_company_url(text)
+
+                # 1. Provenance
+                result.sources.append({
+                    "type": "official_website",
+                    "url": url,
+                    "confidence": "high",
+                })
+
+                # 2. LinkedIn company page
+                if not result.linkedin_url:
+                    result.linkedin_url = _first_linkedin_company_url(text)
+                    if result.linkedin_url:
+                        result.sources.append({
+                            "type": "linkedin_company",
+                            "url": result.linkedin_url,
+                            "confidence": "high",
+                        })
+
+                # 3. Careers URL from links
+                if not result.careers_url:
+                    careers_link = _find_careers_link(company.website, text)
+                    if careers_link:
+                        result.careers_url = careers_link
+                        result.sources.append({
+                            "type": "careers_page",
+                            "url": careers_link,
+                            "confidence": "high",
+                        })
+
+                # 4. Meta description
+                if not result.description:
+                    meta_desc = _extract_meta_description(text)
+                    if meta_desc:
+                        result.description = meta_desc
+
+                # 5. Technology signals
+                found_tech = extract_technology_signals(text)
+                for tech in found_tech:
+                    if tech not in result.technology_signals:
+                        result.technology_signals.append(tech)
+
+                # 6. Emails
                 for address in sorted(set(EMAIL_RE.findall(text))):
                     kind = classify_email(address, domain)
                     if kind.value == "no_email_found":
@@ -73,6 +192,81 @@ class PublicWebsiteProvider(ResearchProvider):
                             source_url=url,
                         )
                     )
+
+        return result
+
+
+class WebSearchCompanyProvider(ResearchProvider):
+    """Discovers official company website, LinkedIn company page, and careers URL using web search."""
+    name = "web_search"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    async def research(self, company: Company, application: Application) -> ProviderResearchResult:
+        from app.integrations.web_search import build_search_engine
+        engine = build_search_engine(self.settings)
+        if not engine:
+            return ProviderResearchResult(metadata={"web_search": "search engine unconfigured"})
+
+        result = ProviderResearchResult(metadata={"provider": self.name})
+        company_name = company.name.strip()
+
+        # 1. Search for official website if not already present
+        if not company.website and not result.website:
+            try:
+                search_results = await engine.search(f'"{company_name}" official website', limit=5)
+                for item in search_results:
+                    url = item.url
+                    domain = _domain(url)
+                    if domain and not any(agg in domain for agg in AGGREGATOR_DOMAINS):
+                        parsed = urlparse(url)
+                        clean_website = f"{parsed.scheme}://{parsed.netloc}"
+                        result.website = clean_website
+                        result.sources.append({
+                            "type": "web_search",
+                            "url": clean_website,
+                            "confidence": "medium",
+                        })
+                        break
+            except Exception as exc:
+                result.metadata["website_search_error"] = str(exc)
+
+        # 2. Search for LinkedIn company page if not present
+        if not company.linkedin_url and not result.linkedin_url:
+            try:
+                li_results = await engine.search(f'site:linkedin.com/company "{company_name}"', limit=3)
+                for item in li_results:
+                    li_url = _first_linkedin_company_url(item.url)
+                    if li_url:
+                        result.linkedin_url = li_url
+                        result.sources.append({
+                            "type": "linkedin_company",
+                            "url": li_url,
+                            "confidence": "medium",
+                        })
+                        break
+            except Exception as exc:
+                result.metadata["linkedin_search_error"] = str(exc)
+
+        # 3. Search for careers page if not present
+        target_site = result.website or company.website
+        if target_site and not result.careers_url:
+            target_domain = _domain(target_site)
+            try:
+                careers_results = await engine.search(f'site:{target_domain} careers OR jobs OR recrutement', limit=3)
+                for item in careers_results:
+                    item_domain = _domain(item.url)
+                    if item_domain == target_domain:
+                        result.careers_url = item.url
+                        result.sources.append({
+                            "type": "careers_page",
+                            "url": item.url,
+                            "confidence": "medium",
+                        })
+                        break
+            except Exception as exc:
+                result.metadata["careers_search_error"] = str(exc)
 
         return result
 
@@ -156,6 +350,8 @@ def build_research_providers(request: ResearchRequest, settings: Settings) -> li
     providers: list[ResearchProvider] = []
     if "public_website" in requested:
         providers.append(PublicWebsiteProvider())
+    if "web_search" in requested or getattr(request, "include_web_search", False):
+        providers.append(WebSearchCompanyProvider(settings))
     if "hunter" in requested:
         providers.append(HunterProvider(settings))
     return providers
@@ -168,9 +364,36 @@ def _domain(url: str) -> str:
 
 def _first_linkedin_company_url(text: str) -> str | None:
     match = re.search(r"https?://(?:www\.)?linkedin\.com/company/[A-Za-z0-9_.%-]+/?", text)
-    return match.group(0) if match else None
+    if match:
+        url = match.group(0).rstrip("/")
+        return url
+    return None
+
+
+def _find_careers_link(base_url: str, html: str) -> str | None:
+    for pattern in CAREERS_PATH_PATTERNS:
+        match = pattern.search(html)
+        if match:
+            rel = match.group(1).strip()
+            if rel.startswith("http://") or rel.startswith("https://"):
+                return rel
+            return urljoin(base_url.rstrip("/") + "/", rel.lstrip("/"))
+    return None
+
+
+def _extract_meta_description(html: str) -> str | None:
+    match = (
+        re.search(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+        or re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
+    )
+    if match:
+        desc = match.group(1).strip()
+        if len(desc) >= 10:
+            return desc
+    return None
 
 
 def _is_recruiting_role(title: str) -> bool:
     lowered = title.lower()
     return any(term in lowered for term in RECRUITER_TERMS)
+

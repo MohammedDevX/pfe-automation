@@ -224,9 +224,11 @@ class ProfessionalEmailOut(BaseModel):
 
 
 class ResearchRequest(BaseModel):
-    providers: list[str] = Field(default_factory=lambda: ["public_website"])
+    providers: list[str] = Field(default_factory=lambda: ["public_website", "web_search"])
     website: HttpUrl | None = None
+    include_web_search: bool = True
     include_hunter: bool = False
+
 
 
 class ResearchResult(BaseModel):
