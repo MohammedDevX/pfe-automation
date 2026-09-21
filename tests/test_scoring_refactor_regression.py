@@ -160,3 +160,35 @@ def test_strategy_titles_not_incorrectly_demoted():
         assert res.score >= 25, f"Expected score >= 25 for strategy tech role '{title}', got {res.score}"
 
 
+def test_phase343_data_analyst_vs_data_engineering():
+    """Phase 3.4.3: Non-engineering data analyst roles are demoted to LOW, while engineering data/ML roles remain HIGH."""
+    # Non-engineering analyst roles -> LOW (score <= 40)
+    non_tech_analysts = [
+        ("Stage - Business Data Analyst", "Paris", "Python, SQL, Tableau dashboards, AWS cloud data analytics for business reporting."),
+        ("Data Analyst Intern", "Paris", "Reporting, BI, business metrics reporting, SQL data extraction, Python data cleaning."),
+    ]
+    for title, loc, desc in non_tech_analysts:
+        opp = OpportunityIn(source="test", company="TechCorp", title=title, location=loc, description=desc, url="https://example.com/job")
+        res = score_opportunity(opp)
+        level, _, _ = _calculate_technical_relevance(title, desc, f"{title} {desc}")
+        assert level == "LOW", f"Expected LOW tech level for non-engineering analyst '{title}', got {level}"
+        assert res.score <= 40, f"Expected score <= 40 for non-engineering analyst '{title}', got {res.score}"
+
+    # Engineering data / ML roles -> HIGH (score >= 75 for internships, level == HIGH)
+    high_tech_data_roles = [
+        ("Data Engineering Intern", "Paris", "Stage de fin d'etudes Python, SQL, Spark, ETL pipelines data engineering."),
+        ("Data Engineer Intern", "Paris", "Data engineer internship building data infrastructure, SQL, Python."),
+        ("Analytics Engineer", "Remote", "dbt, SQL, Python, Snowflake analytics engineering."),
+        ("ML Engineer", "Paris", "PyTorch, Python, ML model development and deployment."),
+        ("Data/ML Engineer", "Remote", "Data and machine learning engineering, Python, Docker."),
+        ("Software/Data Engineer", "Paris", "Software engineering and data pipelines, Python, Go."),
+    ]
+    for title, loc, desc in high_tech_data_roles:
+        opp = OpportunityIn(source="test", company="DataCorp", title=title, location=loc, description=desc, url="https://example.com/job")
+        res = score_opportunity(opp)
+        level, _, _ = _calculate_technical_relevance(title, desc, f"{title} {desc}")
+        assert level == "HIGH", f"Expected HIGH tech level for data engineering role '{title}', got {level}"
+        assert res.score >= 25, f"Expected score >= 25 for data engineering role '{title}', got {res.score}"
+
+
+

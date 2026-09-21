@@ -144,8 +144,13 @@ NON_TECHNICAL_PATTERNS = [
     # --- Phase 3.4.2 additions ---
     # Product management (guards: "product engineer/developer" still has tech keyword in title)
     re.compile(r"\b(?:product\s+manage(?:ment|r)|chef\s+de\s+produit)\b", re.IGNORECASE),
-    # Corporate development / M&A analyst (not "software developer")
-    re.compile(r"\b(?:corporate\s+development|analyst\s+(?:m&a|business))\b", re.IGNORECASE),
+    # Corporate development / non-engineering analyst titles: business analyst, financial analyst, market analyst,
+    # corporate development analyst, and data analyst (only when not qualified by engineer/dev/pipeline/ETL)
+    re.compile(
+        r"\b(?:corporate\s+development|business\s+(?:data\s+)?analyst|financial\s+analyst|market\s+analyst|"
+        r"analyst\s+m&a|data\s+analyst(?!\s+(?:engineer(?:ing)?|developer|dev|pipeline|architect)))\b",
+        re.IGNORECASE,
+    ),
     # Customer/assistant satisfaction — explicit role label only
     re.compile(r"\b(?:customer\s+satisfaction|assistant\s+satisfaction|charg[eé][es]?\s+(?:de\s+la\s+)?satisfaction)\b", re.IGNORECASE),
     # Partnerships+operations or partnerships+strategy compound only.
@@ -361,7 +366,7 @@ TECH_PATTERNS = [
 HIGH_TECH_TITLE_PATTERNS = [
     re.compile(r"(?:\bsoftware\s+(?:engineer(?:ing)?|developer|dev)\b|\bd[eé]veloppeur\b|\bdeveloper\b|\bengineer\b|\bing[eé]nieur\b|\bbackend\b|\bback-end\b|\bfrontend\b|\bfront-end\b|\bfull\s*stack\b|\bfullstack\b|\bweb\s+developer\b|\bmobile\s+developer\b|\barchitecte\s+logiciel\b|\bsdet\b)", re.IGNORECASE),
     re.compile(r"(?:\.net\b|\bdotnet\b|c#|\bc-sharp\b|\basp\.net\b|\bjava\b|\bspring\b|\bpython\b|\bphp\b|\bsymfony\b|\breact\b|\bangular\b|\bnode\b)", re.IGNORECASE),
-    re.compile(r"(?:\bdevops\b|\bqa\b|\bquality\s+assurance\b|\btest\s+automation\b|\bautomatisation\s+des?\s+tests?\b|\bdata\s+engineer(?:ing)?\b|\bcloud\s+engineer(?:ing)?\b)", re.IGNORECASE),
+    re.compile(r"(?:\bdevops\b|\bqa\b|\bquality\s+assurance\b|\btest\s+automation\b|\bautomatisation\s+des?\s+tests?\b|\bdata\s+engineer(?:ing)?\b|\bcloud\s+engineer(?:ing)?\b|\banalytics\s+engineer(?:ing)?\b|\bml\s+engineer(?:ing)?\b|\bmachine\s+learning\s+engineer(?:ing)?\b)", re.IGNORECASE),
     re.compile(r"(?:\bsolutions?\s+engineer\b|\bsales\s+engineer\b|\btechnical\s+account\b|\bdevops\s+consultant\b|\btechnical\s+product\b)", re.IGNORECASE),
 ]
 
