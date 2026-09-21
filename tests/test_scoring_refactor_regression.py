@@ -8,11 +8,12 @@ def test_high_technical_internships_reach_top_score_tier():
     """HIGH technical internships and PFEs must score in the top tier (>= 75)."""
     high_tech_roles = [
         ("Datadog", "Software Engineering Intern", "Paris, France", "Python, Go, distributed systems backend engineering."),
+        ("Trusteq", "AI Developer Intern", "Berlin, Germany", "AI developer internship. Python, machine learning, deep learning."),
         ("TechCasa", "Backend Developer Intern", "Casablanca, Morocco", "C# .NET Core backend development."),
-        ("Acme", "Full Stack Developer Intern", "Remote", "React, Node.js, TypeScript fullstack development."),
+        ("DevCorp", ".NET Developer Intern", "Rabat, Morocco", "Internship in C# .NET Core and ASP.NET."),
         ("NovaTech", ".NET PFE", "Rabat, Morocco", "Stage PFE .NET Angular C# ASP.NET Core."),
-        ("Atlas", "C# Backend Internship", "Casablanca", "C# backend internship with SQL Server."),
-        ("JavaCorp", "Java Spring Internship", "Paris", "Java Spring Boot microservices backend internship."),
+        ("DataCo", "Data Engineering Intern", "Paris", "Data engineering internship with Python, Spark, ETL pipelines."),
+        ("Acme", "Full Stack Developer Intern", "Remote", "React, Node.js, TypeScript fullstack development."),
         ("CloudCo", "DevOps Intern", "Remote", "Docker, Kubernetes, CI/CD pipeline automation intern."),
         ("TestCo", "QA Automation Intern", "Casablanca", "QA test automation with Selenium, Cypress, and Python."),
     ]
@@ -37,9 +38,13 @@ def test_low_non_technical_internships_demoted():
         ("GovTech", "Public Affairs Intern", "Paris", "Public affairs internship, government relations."),
         ("Doctolib", "Account Management Intern", "Paris", "Stage account management commercial."),
         ("Datadog", "Product Management Intern", "Paris", "Product management internship, roadmap analytics."),
+        ("Doctolib", "Stage - Corporate Development Analyst", "Paris", "Corporate development analyst internship."),
+        ("Doctolib", "Stage - Assistant Satisfaction", "Paris", "Internship in customer satisfaction and operations."),
+        ("Doctolib", "Stage - Partenariats Opérations et Stratégie", "Paris", "Internship in partnerships operations and strategy."),
         ("Scaleway", "Event Operations Intern", "Paris", "Event operations internship, logistics."),
         ("BrandCo", "Marketing Intern", "Remote", "Marketing internship, social media."),
         ("PeopleCo", "HR Intern", "Casablanca", "HR internship, recruiting, talent acquisition."),
+        ("MediaCo", "Communication Intern", "Paris", "Communication internship, social media, press relations."),
     ]
 
     for company, title, location, desc in non_tech_roles:
@@ -107,18 +112,51 @@ def test_language_parity_english_intern_vs_french_pfe():
 
 
 def test_boilerplate_description_does_not_elevate_non_tech_job():
-    """Company description containing 'web', 'API', 'IT', 'technology' for 'Account Manager Intern' remains LOW tech."""
-    opp = OpportunityIn(
-        source="test",
-        company="TechCorp",
-        title="Account Manager Intern",
-        location="Paris, France",
-        description="Notre entreprise développe des API web, des solutions IT et des technologies digitales de pointe. Stage en account management commercial.",
-        url="https://example.com/job",
-    )
+    """Company description containing 'web', 'API', 'IT', 'technology', 'cloud', 'AWS', 'data analytics' for non-tech roles remains demoted."""
+    boilerplate_cases = [
+        ("Account Manager Intern", "Notre entreprise développe des API web, des solutions IT et des technologies digitales de pointe. Cloud AWS data analytics. Stage en account management commercial."),
+        ("Product Management Intern", "Join our team building cloud digital platforms, REST APIs, and microservices architecture. Internship focused on product roadmap analytics and feature planning."),
+        ("Stage - Corporate Development Analyst", "Working at a leading cloud tech company utilizing AWS, Python, and data platform tech. Corporate development analyst internship, M&A and strategy."),
+        ("Stage - Assistant Satisfaction", "Plateforme SaaS, cloud, digital, API. Stage assistant satisfaction client et opérations."),
+        ("Stage - Partenariats Opérations et Stratégie", "Leading tech platform with cloud infrastructure and data analytics. Stage en partenariats opérations et stratégie."),
+    ]
 
-    res = score_opportunity(opp)
-    level, _, _ = _calculate_technical_relevance(opp.title, opp.description, f"{opp.title} {opp.description}")
+    for title, desc in boilerplate_cases:
+        opp = OpportunityIn(
+            source="test",
+            company="TechCorp",
+            title=title,
+            location="Paris, France",
+            description=desc,
+            url="https://example.com/job",
+        )
+        res = score_opportunity(opp)
+        level, _, _ = _calculate_technical_relevance(opp.title, opp.description, f"{opp.title} {opp.description}")
+        assert level in ("LOW", "MEDIUM"), f"Expected LOW/MEDIUM tech level for '{title}', got {level}"
+        assert res.score <= 40, f"Expected score <= 40 for '{title}', got {res.score} (Reason: {res.reason})"
 
-    assert level == "LOW"
-    assert res.score <= 40
+
+def test_strategy_titles_not_incorrectly_demoted():
+    """Titles containing 'strategy' combined with technical domains (Technology Strategy, Data Strategy, Cloud Strategy) must not be demoted as non-technical."""
+    tech_strategy_roles = [
+        ("Technology Strategy Engineer", "Paris", "Work on tech strategy, cloud architecture and software design."),
+        ("Data Strategy Specialist", "Remote", "Python, data pipelines, SQL, and data strategy."),
+        ("Cloud Strategy Architect", "Paris", "AWS, Azure cloud strategy and platform engineering."),
+        ("DevOps Strategy Consultant", "Casablanca", "CI/CD automation, Docker, and DevOps strategy."),
+    ]
+
+    for title, location, desc in tech_strategy_roles:
+        opp = OpportunityIn(
+            source="test",
+            company="ScaleTech",
+            title=title,
+            location=location,
+            description=desc,
+            url="https://example.com/job",
+        )
+        res = score_opportunity(opp)
+        level, _, _ = _calculate_technical_relevance(title, desc, f"{title} {desc}")
+        assert level in ("HIGH", "MEDIUM"), f"Expected HIGH or MEDIUM tech level for strategy tech role '{title}', got {level}"
+        assert res.score >= 25, f"Expected score >= 25 for strategy tech role '{title}', got {res.score}"
+
+

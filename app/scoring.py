@@ -131,7 +131,7 @@ JUNIOR_PATTERNS = [
 NON_TECHNICAL_PATTERNS = [
     re.compile(r"\b(?:juriste|legal|droit)\b", re.IGNORECASE),
     re.compile(r"\b(?:affaires?\s+publiques|public\s+affairs)\b", re.IGNORECASE),
-    re.compile(r"\b(?:account\s+manage(?:ment|r)|chargé[es]?\s+d['’]?affaires?|grands?\s+comptes?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:account\s+manage(?:ment|r)|chargé[es]?\s+d['']?affaires?|grands?\s+comptes?)\b", re.IGNORECASE),
     re.compile(r"\b(?:sales|commercial[es]?|prospection|vendeur)\b", re.IGNORECASE),
     re.compile(r"\b(?:business\s+development|bdr|sdr)\b", re.IGNORECASE),
     re.compile(r"\b(?:marketing|communication|réseaux\s+sociaux|social\s+media|brand)\b", re.IGNORECASE),
@@ -141,6 +141,22 @@ NON_TECHNICAL_PATTERNS = [
     re.compile(r"\b(?:finance|accounting|comptabilité|comptable|audit)\b", re.IGNORECASE),
     re.compile(r"\b(?:achats|procurement|approvisionneur|acheteur)\b", re.IGNORECASE),
     re.compile(r"\b(?:hospitality|receptionist|hôte(?:sse)?)\b", re.IGNORECASE),
+    # --- Phase 3.4.2 additions ---
+    # Product management (guards: "product engineer/developer" still has tech keyword in title)
+    re.compile(r"\b(?:product\s+manage(?:ment|r)|chef\s+de\s+produit)\b", re.IGNORECASE),
+    # Corporate development / M&A analyst (not "software developer")
+    re.compile(r"\b(?:corporate\s+development|analyst\s+(?:m&a|business))\b", re.IGNORECASE),
+    # Customer/assistant satisfaction — explicit role label only
+    re.compile(r"\b(?:customer\s+satisfaction|assistant\s+satisfaction|charg[eé][es]?\s+(?:de\s+la\s+)?satisfaction)\b", re.IGNORECASE),
+    # Partnerships+operations or partnerships+strategy compound only.
+    # "partnerships" alone is NOT matched to avoid demoting "Partnerships Developer".
+    # Protection: if title also contains a HIGH_TECH keyword (engineer/developer) the
+    # NON_TECH gate is skipped (is_non_tech_domain and not title_has_high_tech check).
+    re.compile(r"\b(?:partenariats?\s+(?:op[eé]rations?|strat[eé]g|commerciaux?)|partnerships?\s+(?:operations?|strategy|commercial))\b", re.IGNORECASE),
+    # Operations+strategy as a compound phrase.
+    # NOT just "strategy" alone — preserves "Technology Strategy Engineer",
+    # "Data Strategy", "Cloud Strategy", "DevOps Strategy".
+    re.compile(r"\b(?:op[eé]rations?\s+(?:et\s+)?strat[eé]g|operations?\s+(?:and\s+)?strategy)\b", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------
@@ -419,7 +435,7 @@ def _calculate_technical_relevance(title: str, description: str, full_text: str)
             medium_matches += 1
 
     # 4. Final level classification
-    if title_has_high_tech or body_high_matches >= 2 or (body_high_matches >= 1 and not is_non_tech_domain):
+    if title_has_high_tech or body_high_matches >= 2:
         level = "HIGH"
         notes.append(f"High technical relevance ({high_matches + body_high_matches} tech matches)")
     elif body_high_matches >= 1 or medium_matches >= 1:
@@ -531,7 +547,7 @@ def map_score_to_tier(
         min_s, max_s = TIER_SCORE_BOUNDS[category]
     elif tech_level == "MEDIUM":
         if category in (RelevanceCategory.EXPLICIT_PFE, RelevanceCategory.EXPLICIT_INTERNSHIP):
-            min_s, max_s = (50, 74)
+            min_s, max_s = (35, 59)
         else:
             min_s, max_s = (35, 49)
     else:  # LOW
