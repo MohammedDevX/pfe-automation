@@ -1202,6 +1202,20 @@ def ui_application_review(application_id: int, db: Session = Depends(get_db)) ->
     is_notion_internal = "notion.so" in (app_obj.job_url or "").lower()
     url_display = "<span style='color:#888'>None (Notion Internal Record)</span>" if is_notion_internal else f"<a href='{app_obj.job_url}' target='_blank'>{app_obj.job_url}</a>"
 
+    contacts_html = ""
+    if app_obj.company_ref and app_obj.company_ref.contacts:
+        c_list = ""
+        for c in app_obj.company_ref.contacts:
+            from app.services.research import classify_contact_relevance
+            rel, reason = classify_contact_relevance(c.job_title)
+            badge_color = "#28a745" if rel == "HIGH" else ("#007bff" if rel == "MEDIUM" else "#6c757d")
+            li_link = f" | <a href='{c.linkedin_url}' target='_blank'>LinkedIn</a>" if c.linkedin_url else ""
+            email_info = f" | ✉️ {c.professional_email}" if c.professional_email else ""
+            c_list += f"<li><span style='background:{badge_color};color:#fff;padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:bold;'>{rel}</span> <b>{c.name}</b> ({c.job_title or 'Title unknown'}){li_link}{email_info}</li>"
+        contacts_html = f"<h4>Discovered Contacts ({len(app_obj.company_ref.contacts)})</h4><ul>{c_list}</ul>"
+    else:
+        contacts_html = "<h4>Discovered Contacts</h4><p style='color:#888;font-size:0.9rem;'>No public recruiter contacts found yet.</p>"
+
     return f"""<!DOCTYPE html><html lang='fr'><head><meta charset='UTF-8'><title>Application Review</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem}}
 .card{{background:#fff;border:1px solid #ddd;border-radius:8px;padding:1.25rem;margin-bottom:1rem}}
@@ -1213,10 +1227,14 @@ def ui_application_review(application_id: int, db: Session = Depends(get_db)) ->
 <h2>Apply: {app_obj.company} — {app_obj.position}</h2>
 <div class='card'><b>Status:</b> {app_obj.application_status.value} | <b>URL:</b> {url_display}</div>
 <div class='card'>
+{contacts_html}
+</div>
+<div class='card'>
 {payload_html}
 <div style='margin-top:1rem'>{buttons_html}</div>
 </div>
 <div id='msg' style='margin-top:1rem;color:#555'></div>
+
 <script>
 const appId={app_obj.id};
 async function api(p,m,b){{

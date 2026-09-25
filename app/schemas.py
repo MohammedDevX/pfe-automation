@@ -1,9 +1,10 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from app.models import ApplicationStatus, EmailKind, MessageChannel, MessageStatus, ResponseStatus, ReviewStatus
+
 
 
 class OpportunityIn(BaseModel):
@@ -206,6 +207,17 @@ class ContactOut(BaseModel):
     source: str
     source_url: str | None
     discovered_at: datetime
+    relevance: str = "LOW"
+    relevance_reason: str = ""
+
+    @model_validator(mode="after")
+    def compute_relevance(self) -> "ContactOut":
+        if self.relevance == "LOW" and not self.relevance_reason:
+            from app.services.research import classify_contact_relevance
+            rel, reason = classify_contact_relevance(self.job_title)
+            self.relevance = rel
+            self.relevance_reason = reason
+        return self
 
 
 class ProfessionalEmailOut(BaseModel):
@@ -224,10 +236,11 @@ class ProfessionalEmailOut(BaseModel):
 
 
 class ResearchRequest(BaseModel):
-    providers: list[str] = Field(default_factory=lambda: ["public_website", "web_search"])
+    providers: list[str] = Field(default_factory=lambda: ["public_website", "web_search", "web_search_recruiter"])
     website: HttpUrl | None = None
     include_web_search: bool = True
     include_hunter: bool = False
+
 
 
 

@@ -343,6 +343,53 @@ class HunterProvider(ResearchProvider):
         return result
 
 
+class WebSearchRecruiterProvider(ResearchProvider):
+    """Discovers recruiter and HR contacts using targeted web searches."""
+
+    name = "web_search_recruiter"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    async def research(self, company: Company, application: Application) -> ProviderResearchResult:
+        from app.integrations.web_search import build_search_engine
+
+        engine = build_search_engine(self.settings)
+        if not engine:
+            return ProviderResearchResult(metadata={"web_search_recruiter": "search engine unconfigured"})
+
+        result = ProviderResearchResult(metadata={"provider": self.name})
+        company_name = company.name.strip()
+        company_domain = _domain(company.website) if company.website else None
+
+        queries = [
+            f'site:linkedin.com/in "{company_name}" "talent acquisition" OR "recruiter" OR "human resources"',
+            f'site:linkedin.com/in "{company_name}" "engineering manager" OR "head of engineering"',
+        ]
+        if company_domain:
+            queries.append(f'"{company_name}" recruiter OR "campus recruiter" contact email')
+
+        for query in queries:
+            try:
+                search_results = await engine.search(query, limit=5)
+                for item in search_results:
+                    parsed_contacts, parsed_emails = _parse_recruiter_search_item(item, company_name, company_domain)
+                    for candidate in parsed_contacts:
+                        if not any(
+                            (c.linkedin_url and c.linkedin_url == candidate.linkedin_url)
+                            or (c.name.lower() == candidate.name.lower() and (c.job_title or "").lower() == (candidate.job_title or "").lower())
+                            for c in result.contacts
+                        ):
+                            result.contacts.append(candidate)
+                    for candidate in parsed_emails:
+                        if not any(e.address.lower() == candidate.address.lower() for e in result.emails):
+                            result.emails.append(candidate)
+            except Exception as exc:
+                result.metadata[f"search_error_{query[:20]}"] = str(exc)
+
+        return result
+
+
 def build_research_providers(request: ResearchRequest, settings: Settings) -> list[ResearchProvider]:
     requested = set(request.providers)
     if request.include_hunter:
@@ -352,9 +399,12 @@ def build_research_providers(request: ResearchRequest, settings: Settings) -> li
         providers.append(PublicWebsiteProvider())
     if "web_search" in requested or getattr(request, "include_web_search", False):
         providers.append(WebSearchCompanyProvider(settings))
+    if "web_search_recruiter" in requested or "web_search" in requested or getattr(request, "include_web_search", False):
+        providers.append(WebSearchRecruiterProvider(settings))
     if "hunter" in requested:
         providers.append(HunterProvider(settings))
     return providers
+
 
 
 def _domain(url: str) -> str:
@@ -396,4 +446,92 @@ def _extract_meta_description(html: str) -> str | None:
 def _is_recruiting_role(title: str) -> bool:
     lowered = title.lower()
     return any(term in lowered for term in RECRUITER_TERMS)
+
+
+LINKEDIN_PROFILE_RE = re.compile(r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/([A-Za-z0-9_-]+)/?", re.I)
+INVALID_NAME_PATTERNS = re.compile(
+    r"\b(?:"
+    r"jobs|careers|career|offres|stage|internship|intern|recruitment|recrutement|recruiter|recruiters|recruiting|"
+    r"talent|acquisition|human|resources|hr|hrbp|hiring|manager|managers|head|lead|director|vp|cto|officer|"
+    r"engineer|developer|architect|analyst|specialist|consultant|partner|team|department|group|division|"
+    r"company|corp|corporation|inc|ltd|sarl|sas|llc|gmbh|co|associates|agency|solutions|services|"
+    r"linkedin|profile|profiles|view|top|best|find|hire|search|list|directory|overview|about|contact|us|"
+    r"france|paris|london|york|usa|world|worldwide|remote|location|site|blog|news|article|forum|working"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+
+def _parse_recruiter_search_item(item, company_name: str, domain: str | None = None) -> tuple[list[ContactCandidate], list[EmailCandidate]]:
+    contacts: list[ContactCandidate] = []
+    emails: list[EmailCandidate] = []
+
+    # 1. Extract emails from snippet
+    if getattr(item, "snippet", None):
+        found_emails = EMAIL_RE.findall(item.snippet)
+        for addr in set(found_emails):
+            kind = classify_email(addr, domain)
+            if kind.value != "no_email_found":
+                emails.append(
+                    EmailCandidate(
+                        address=addr.lower(),
+                        kind=kind,
+                        provider="web_search_recruiter",
+                        verification_status="unverified",
+                        confidence=0.6 if domain and domain in addr.lower() else 0.4,
+                        source_url=item.url,
+                    )
+                )
+
+    # 2. Extract LinkedIn URL if profile link
+    match = LINKEDIN_PROFILE_RE.search(item.url)
+    clean_linkedin_url = f"https://www.linkedin.com/in/{match.group(1)}" if match else None
+
+    # 3. Parse Name and Title from title string or snippet
+    title_text = getattr(item, "title", "") or ""
+    title_parts = [p.strip() for p in re.split(r"[-|:]", title_text) if p.strip()]
+
+    name: str | None = None
+    job_title: str | None = None
+
+    if title_parts:
+        first_part = title_parts[0]
+        words = first_part.split()
+        if 2 <= len(words) <= 4 and not INVALID_NAME_PATTERNS.search(first_part):
+            name = first_part
+
+        if len(title_parts) >= 2:
+            second_part = title_parts[1]
+            if "linkedin" not in second_part.lower() and len(second_part) <= 100:
+                job_title = second_part
+
+
+    if not job_title and getattr(item, "snippet", None):
+        for term in RECRUITER_TERMS:
+            if term in item.snippet.lower():
+                m = re.search(r"([^.,;]*\b" + re.escape(term) + r"\b[^.,;]*)", item.snippet, re.I)
+                if m:
+                    candidate_title = m.group(1).strip()
+                    if len(candidate_title) <= 60:
+                        job_title = candidate_title
+                        break
+
+    if name:
+        prof_email = emails[0].address if emails else None
+        contacts.append(
+            ContactCandidate(
+                name=name,
+                job_title=job_title,
+                linkedin_url=clean_linkedin_url,
+                professional_email=prof_email,
+                email_verification_status="unverified" if prof_email else None,
+                email_confidence=emails[0].confidence if emails else None,
+                source="web_search_recruiter",
+                source_url=item.url,
+            )
+        )
+
+    return contacts, emails
+
 

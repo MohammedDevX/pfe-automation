@@ -83,6 +83,37 @@ def classify_email(address: str, company_domain: str | None = None, verified: bo
     return EmailKind.verified_individual if verified else EmailKind.unverified_individual
 
 
+RECRUITER_TITLE_PATTERNS = [
+    re.compile(r"\b(?:talent acquisition|recruiter|recrutement|recruiting|human resources|hr manager|hrbp|hr business partner|campus recruiter|university recruiter|technical recruiter|talent partner|talent specialist|head of talent|head of hr|people manager|people partner|people ops|people operations)\b", re.I),
+]
+
+ENGINEERING_MANAGER_PATTERNS = [
+    re.compile(r"\b(?:engineering manager|tech lead|technical lead|head of engineering|cto|chief technology officer|vp engineering|director of engineering|software manager|engineering director|lead developer|lead engineer|hiring manager)\b", re.I),
+]
+
+
+def classify_contact_relevance(job_title: str | None, company_name: str | None = None) -> tuple[str, str]:
+    """Classifies a contact's role relevance for internship applications.
+
+    Returns (relevance_level, reasoning_string) where relevance_level is 'HIGH', 'MEDIUM', or 'LOW'.
+    """
+    if not job_title:
+        return "LOW", "No job title specified"
+
+    title = job_title.strip()
+
+    for pattern in RECRUITER_TITLE_PATTERNS:
+        if pattern.search(title):
+            return "HIGH", f"Explicit recruiting/HR role ({title})"
+
+    for pattern in ENGINEERING_MANAGER_PATTERNS:
+        if pattern.search(title):
+            return "MEDIUM", f"Engineering leadership/hiring manager role ({title})"
+
+    return "LOW", f"General professional role ({title})"
+
+
+
 async def research_application(
     db: Session,
     application: Application,
