@@ -750,3 +750,249 @@ def test_openai_prompt_uses_correct_language_summary() -> None:
     assert "Language: English" in prompt_en
     assert "Summary EN" in prompt_en
     assert "Résumé FR" not in prompt_en
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.6.1 & 3.6.2 Regression Tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_followup_sets_follow_up_count_in_context() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.follow_up_count = 1
+    session.commit()
+
+    sent_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Initial outreach",
+        body="Initial message body text",
+        status=MessageStatus.sent,
+    )
+    session.add(sent_msg)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Relance", body="Relance body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+        mock_provider.generate.assert_called_once()
+        ctx: MessageContext = mock_provider.generate.call_args[0][0]
+        assert ctx.follow_up_count == 1
+        assert ctx.previous_body == "Initial message body text"
+
+
+def test_initial_message_has_zero_follow_up_count() -> None:
+    session = make_session()
+    app = make_application(session)
+    assert app.follow_up_count == 0
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Subject", body="Body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+        ctx: MessageContext = mock_provider.generate.call_args[0][0]
+        assert ctx.follow_up_count == 0
+        assert ctx.previous_body is None
+
+
+def test_followup_uses_previous_sent_message() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.follow_up_count = 1
+
+    msg1 = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Subject 1",
+        body="First sent email content",
+        status=MessageStatus.sent,
+    )
+    session.add(msg1)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Subject 2", body="Followup body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+        ctx: MessageContext = mock_provider.generate.call_args[0][0]
+        assert ctx.previous_body == "First sent email content"
+
+
+def test_non_sent_message_is_not_used_as_previous_body() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.follow_up_count = 1
+
+    draft_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Draft",
+        body="Draft body",
+        status=MessageStatus.draft,
+    )
+    failed_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Failed",
+        body="Failed body",
+        status=MessageStatus.failed,
+    )
+    approved_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Approved",
+        body="Approved body",
+        status=MessageStatus.approved,
+    )
+    session.add_all([draft_msg, failed_msg, approved_msg])
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Sub", body="Body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+        ctx: MessageContext = mock_provider.generate.call_args[0][0]
+        assert ctx.previous_body is None
+
+
+def test_send_transitions_discovered_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.discovered
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contacted
+
+
+def test_send_transitions_qualified_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.qualified
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contacted
+
+
+def test_send_transitions_researched_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.researched
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contacted
+
+
+def test_send_transitions_contact_ready_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.contact_ready
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contacted
+
+
+def test_failed_send_does_not_transition_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.contact_ready
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    failing_sender = NullEmailSender()
+    async def bad_send(**kwargs):
+        raise EmailSendError("SMTP Error")
+    failing_sender.send = bad_send
+
+    with patch("app.services.messaging.build_email_sender", return_value=failing_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contact_ready
+    assert msg.status == MessageStatus.failed
+
+
+def test_dry_run_does_not_transition_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.contact_ready
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    dry_run_settings = Settings(
+        dry_run_email=True,
+        candidate_first_name="Alice",
+        candidate_last_name="Martin",
+        candidate_degree="student",
+        candidate_school="ENSIAS",
+        candidate_specialization="SE",
+        candidate_email="alice@example.com",
+    )
+
+    asyncio.run(send_message(session, msg, dry_run_settings, to_email="test@example.com"))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contact_ready
+    assert msg.status == MessageStatus.approved
+    assert "[DRY RUN]" in msg.failure_reason
+
+
+def test_approval_does_not_transition_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.contact_ready
+    msg = make_draft(session, app)
+
+    approve_message(session, msg)
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contact_ready
+
+
+def test_generation_does_not_transition_to_contacted() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.application_status = ApplicationStatus.contact_ready
+
+    asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+    session.refresh(app)
+    assert app.application_status == ApplicationStatus.contact_ready
+

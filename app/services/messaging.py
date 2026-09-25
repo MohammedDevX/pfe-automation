@@ -200,6 +200,7 @@ def select_best_candidate_project(
 
 
 def _build_context(
+    db: Session,
     application: Application,
     company: Company | None,
     contact: Contact | None,
@@ -232,6 +233,24 @@ def _build_context(
 
     contact_rel, contact_reason = classify_contact_relevance(contact.job_title if contact else application.recruiter)
 
+    # --- Phase 3.6.1: follow-up context ---
+    # Determine how many follow-ups have already been sent and retrieve
+    # the body of the most recently SENT message for this application/channel.
+    # Only SENT messages qualify — drafts, approved, rejected, and failed are excluded.
+    follow_up_count = application.follow_up_count or 0
+    previous_body: str | None = None
+    if application.id is not None:
+        prev_msg = db.scalar(
+            select(OutboundMessage)
+            .where(OutboundMessage.application_id == application.id)
+            .where(OutboundMessage.channel == channel)
+            .where(OutboundMessage.status == MessageStatus.sent)
+            .order_by(OutboundMessage.sent_at.desc().nullslast(), OutboundMessage.created_at.desc())
+            .limit(1)
+        )
+        if prev_msg:
+            previous_body = prev_msg.body
+
     return MessageContext(
         candidate_name=settings.candidate_name,
         candidate_degree=settings.candidate_degree or "Master",
@@ -262,10 +281,13 @@ def _build_context(
         selected_project_description=selected_proj.get("description") if selected_proj else None,
         personalization_signals=personalization_signals,
         channel=channel,
+        follow_up_count=follow_up_count,
+        previous_body=previous_body,
         language=resolved_language,
         candidate_cv_summary_fr=settings.candidate_cv_summary_fr,
         candidate_cv_summary_en=settings.candidate_cv_summary_en,
     )
+
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +320,7 @@ async def generate_message(
 
     # Build generation context
     ctx = _build_context(
+        db,
         application,
         company,
         contact,
@@ -461,7 +484,15 @@ async def send_message(
         message.failure_reason = None
         # Update application tracking
         application.contact_date = application.contact_date or date.today()
-        if application.application_status == ApplicationStatus.discovered:
+        # Phase 3.6.2: transition any pre-contact status to CONTACTED on successful send.
+        # Only applies when the message is actually delivered — not on dry-run or SMTP failure.
+        _PRE_CONTACT_STATUSES = {
+            ApplicationStatus.discovered,
+            ApplicationStatus.qualified,
+            ApplicationStatus.researched,
+            ApplicationStatus.contact_ready,
+        }
+        if application.application_status in _PRE_CONTACT_STATUSES:
             application.application_status = ApplicationStatus.contacted
         _add_event(
             db,
