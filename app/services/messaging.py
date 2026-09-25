@@ -155,6 +155,50 @@ def _detect_language(
     return default_language if default_language in ("fr", "en") else "fr"
 
 
+def select_best_candidate_project(
+    job_title: str,
+    job_description: str | None,
+    job_tech_signals: list[str],
+    company_tech_signals: list[str],
+    candidate_projects: list[dict],
+) -> tuple[dict | None, list[str]]:
+    """Determines the most relevant candidate project based on technology & keyword overlap."""
+    if not candidate_projects:
+        return None, []
+
+    combined_signals: set[str] = set(job_tech_signals) | set(company_tech_signals)
+    text = f"{job_title} {job_description or ''}".lower()
+
+    best_project: dict | None = None
+    best_overlap: list[str] = []
+    max_score = -1
+
+    for project in candidate_projects:
+        proj_techs = project.get("technologies", [])
+        overlap: list[str] = []
+        score = 0
+
+        for tech in proj_techs:
+            tech_lower = tech.lower()
+            if any(s.lower() == tech_lower for s in combined_signals):
+                overlap.append(tech)
+                score += 3
+            elif tech_lower in text:
+                overlap.append(tech)
+                score += 1
+
+        if score > max_score:
+            max_score = score
+            best_project = project
+            best_overlap = overlap
+
+    if not best_project or max_score <= 0:
+        best_project = candidate_projects[0]
+        best_overlap = best_project.get("technologies", [])[:3]
+
+    return best_project, best_overlap
+
+
 def _build_context(
     application: Application,
     company: Company | None,
@@ -163,6 +207,9 @@ def _build_context(
     channel: str,
     language: str | None = None,
 ) -> MessageContext:
+    from app.integrations.research_providers import extract_technology_signals
+    from app.services.research import classify_contact_relevance
+
     resolved_language = _detect_language(
         application,
         requested_language=language,
@@ -170,23 +217,50 @@ def _build_context(
     )
     cv_summary = settings.get_cv_summary(resolved_language)
 
+    company_meta = company.metadata_json or {} if company else {}
+    company_tech = company_meta.get("technology_signals", [])
+    job_tech = extract_technology_signals(f"{application.position} {application.description or ''}")
+
+    candidate_projects = settings.get_candidate_projects()
+    selected_proj, personalization_signals = select_best_candidate_project(
+        application.position,
+        application.description,
+        job_tech,
+        company_tech,
+        candidate_projects,
+    )
+
+    contact_rel, contact_reason = classify_contact_relevance(contact.job_title if contact else application.recruiter)
+
     return MessageContext(
         candidate_name=settings.candidate_name,
-        candidate_degree=settings.candidate_degree,
+        candidate_degree=settings.candidate_degree or "Master",
         candidate_school=settings.candidate_school,
         candidate_specialization=settings.candidate_specialization,
         candidate_email=settings.candidate_email,
         candidate_cv_summary=cv_summary,
+        candidate_skills=settings.candidate_skills,
+        candidate_github_url=settings.candidate_github_url,
+        candidate_linkedin_url=settings.candidate_linkedin_url,
+        candidate_portfolio_url=settings.candidate_portfolio_url,
         job_title=application.position,
         job_description=application.description,
         job_url=application.job_url,
         job_location=application.location,
+        job_tech_signals=job_tech,
         company_name=company.name if company else application.company,
         company_description=company.description if company else None,
         company_website=company.website if company else None,
+        company_industry=company_meta.get("industry"),
+        company_tech_signals=company_tech,
         recruiter_name=contact.name if contact else application.recruiter,
         recruiter_title=contact.job_title if contact else None,
         recruiter_email=contact.professional_email if contact else application.professional_email,
+        contact_relevance=contact_rel,
+        contact_source=contact.source if contact else None,
+        selected_project_name=selected_proj.get("name") if selected_proj else None,
+        selected_project_description=selected_proj.get("description") if selected_proj else None,
+        personalization_signals=personalization_signals,
         channel=channel,
         language=resolved_language,
         candidate_cv_summary_fr=settings.candidate_cv_summary_fr,
@@ -241,6 +315,20 @@ async def generate_message(
     except Exception as exc:
         raise RuntimeError(f"Message generation failed: {exc}") from exc
 
+    metadata_json = {
+        "opportunity_id": application.id,
+        "company_id": application.company_id,
+        "contact_id": contact.id if contact else None,
+        "language": ctx.language,
+        "channel": ctx.channel,
+        "selected_project": ctx.selected_project_name,
+        "personalization_signals": ctx.personalization_signals,
+        "contact_relevance": ctx.contact_relevance,
+        "provider": generated.provider,
+        "generated_at": _utcnow().isoformat(),
+        "generation_version": "3.5.3",
+    }
+
     # Persist draft
     message = OutboundMessage(
         application_id=application.id,
@@ -251,6 +339,7 @@ async def generate_message(
         generation_provider=generated.provider,
         generation_model=generated.model,
         status=MessageStatus.draft,
+        metadata_json=metadata_json,
     )
     db.add(message)
     db.flush()
@@ -267,6 +356,7 @@ async def generate_message(
     db.commit()
     db.refresh(message)
     return message
+
 
 
 def edit_message(db: Session, message: OutboundMessage, patch: MessagePatch) -> OutboundMessage:

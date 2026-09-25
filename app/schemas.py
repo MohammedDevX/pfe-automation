@@ -256,6 +256,7 @@ class MessageGenerateRequest(BaseModel):
     contact_id: int | None = None
     provider: str = Field(default="template", description="'openai' or 'template'")
     language: str | None = Field(default=None, description="Message language ('fr' or 'en'). Defaults to auto-detect or default settings.")
+    regenerate: bool = False
 
 
 class MessageOut(BaseModel):
@@ -270,10 +271,12 @@ class MessageOut(BaseModel):
     generation_provider: str | None
     generation_model: str | None
     status: MessageStatus
+    metadata_json: dict | None = None
     created_at: datetime
     approved_at: datetime | None
     sent_at: datetime | None
     failure_reason: str | None
+
 
 
 class MessagePatch(BaseModel):

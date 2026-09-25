@@ -241,8 +241,10 @@ class OutboundMessage(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     application: Mapped[Application] = relationship(back_populates="messages")
+
     contact: Mapped["Contact | None"] = relationship()
 
 

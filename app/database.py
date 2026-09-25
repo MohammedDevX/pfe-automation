@@ -7,6 +7,25 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
+DEFAULT_CANDIDATE_PROJECTS = [
+    {
+        "name": "GearOil",
+        "description": "Industrial asset monitoring and telemetry system with real-time alert processing.",
+        "technologies": ["ASP.NET Core", ".NET", "C#", "SQL Server", "Kafka", "Redis", "Docker", "PostgreSQL", "FastAPI"],
+    },
+    {
+        "name": "SmartMunicipality",
+        "description": "Citizen service portal for automated request processing and administrative document workflows.",
+        "technologies": ["Laravel", "PHP", "React", "TypeScript", "MySQL", "Tailwind CSS"],
+    },
+    {
+        "name": "DataPipelineX",
+        "description": "ETL ingestion and processing engine for distributed data streams.",
+        "technologies": ["Python", "PyTorch", "TensorFlow", "Pandas", "Spark", "AWS", "Docker", "Machine Learning", "Data Engineering"],
+    },
+]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         extra="ignore",
@@ -58,6 +77,7 @@ class Settings(BaseSettings):
     candidate_cv_summary: str | None = None
     candidate_cv_summary_fr: str | None = None
     candidate_cv_summary_en: str | None = None
+    candidate_projects: list[dict] | None = None
 
     # Language configuration
     message_languages: str = "fr,en"
@@ -83,6 +103,11 @@ class Settings(BaseSettings):
         if lang.startswith("en"):
             return self.candidate_cv_summary_en or self.candidate_cv_summary or self.candidate_cv_summary_fr
         return self.candidate_cv_summary_fr or self.candidate_cv_summary or self.candidate_cv_summary_en
+
+    def get_candidate_projects(self) -> list[dict]:
+        if self.candidate_projects:
+            return self.candidate_projects
+        return DEFAULT_CANDIDATE_PROJECTS
 
     # Legacy alias kept for backward compatibility with template message generation
     @property
@@ -112,6 +137,7 @@ class Settings(BaseSettings):
     # -----------------------------------------------------------------------
     # IMAP response ingestion (reuses smtp_user / smtp_password by default)
     # -----------------------------------------------------------------------
+
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
 

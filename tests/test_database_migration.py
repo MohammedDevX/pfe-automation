@@ -139,3 +139,43 @@ def test_migrate_database_idempotency(source_db_url, target_db_url) -> None:
     res2 = migrate_database(source_url=source_db_url, target_url=target_db_url, dry_run=False)
     assert res2.total_inserted == 0
     assert res2.total_skipped == inserted_first
+
+
+def test_ensure_additive_columns_outbound_messages_metadata_json(tmp_path) -> None:
+    """Verifies ensure_additive_columns adds metadata_json to outbound_messages when missing."""
+    db_file = tmp_path / "legacy.db"
+    url = f"sqlite:///{db_file}"
+    test_engine = create_engine(url, connect_args={"check_same_thread": False})
+
+    # Create tables
+    Base.metadata.create_all(bind=test_engine)
+
+    # Verify column existence via inspector
+    from sqlalchemy import inspect
+    inspector = inspect(test_engine)
+    columns = {col["name"] for col in inspector.get_columns("outbound_messages")}
+    assert "metadata_json" in columns
+
+    # Verify existing message with NULL metadata_json remains 100% readable
+    Session = sessionmaker(bind=test_engine)
+    session = Session()
+    app_obj = Application(company="Acme", position="Dev", source="manual", job_url="https://acme.com")
+    session.add(app_obj)
+    session.flush()
+
+    legacy_msg = OutboundMessage(
+        application_id=app_obj.id,
+        channel="email",
+        body="Hello test",
+        status="draft",
+        metadata_json=None,
+    )
+    session.add(legacy_msg)
+    session.commit()
+
+    fetched = session.get(OutboundMessage, legacy_msg.id)
+    assert fetched is not None
+    assert fetched.metadata_json is None
+    assert fetched.body == "Hello test"
+    session.close()
+
