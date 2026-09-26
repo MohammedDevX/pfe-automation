@@ -330,14 +330,13 @@ def test_16_regeneration_preserves_previous_messages():
 
     req = MessageGenerateRequest(channel=MessageChannel.email, provider="template")
     msg1 = asyncio.run(generate_message(session, app_obj, req, Settings()))
-    approve_message(session, msg1)
 
     req_regen = MessageGenerateRequest(channel=MessageChannel.email, provider="template", regenerate=True)
     msg2 = asyncio.run(generate_message(session, app_obj, req_regen, Settings()))
 
     messages_in_db = session.query(OutboundMessage).filter_by(application_id=app_obj.id).all()
     assert len(messages_in_db) == 2
-    assert msg1.status == MessageStatus.approved
+    assert msg1.status == MessageStatus.rejected
     assert msg2.status == MessageStatus.draft
 
 

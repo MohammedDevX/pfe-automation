@@ -848,14 +848,14 @@ def test_non_sent_message_is_not_used_as_previous_body() -> None:
         body="Failed body",
         status=MessageStatus.failed,
     )
-    approved_msg = OutboundMessage(
+    rejected_msg = OutboundMessage(
         application_id=app.id,
         channel=MessageChannel.email,
-        subject="Approved",
-        body="Approved body",
-        status=MessageStatus.approved,
+        subject="Rejected",
+        body="Rejected body",
+        status=MessageStatus.rejected,
     )
-    session.add_all([draft_msg, failed_msg, approved_msg])
+    session.add_all([draft_msg, failed_msg, rejected_msg])
     session.commit()
 
     with patch("app.services.messaging.build_message_provider") as mock_build:
@@ -863,7 +863,7 @@ def test_non_sent_message_is_not_used_as_previous_body() -> None:
         mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Sub", body="Body", provider="mock"))
         mock_build.return_value = mock_provider
 
-        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=True), DEFAULT_SETTINGS))
 
         ctx: MessageContext = mock_provider.generate.call_args[0][0]
         assert ctx.previous_body is None
@@ -995,4 +995,234 @@ def test_generation_does_not_transition_to_contacted() -> None:
 
     session.refresh(app)
     assert app.application_status == ApplicationStatus.contact_ready
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.6.4 Idempotency Tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_message_idempotent_returns_existing_draft_when_regenerate_false() -> None:
+    session = make_session()
+    app = make_application(session)
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Sub", body="Body 1", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        msg1 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+        assert mock_provider.generate.call_count == 1
+
+        # Second call with regenerate=False should return the exact same draft without calling provider again
+        msg2 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+        assert mock_provider.generate.call_count == 1
+        assert msg2.id == msg1.id
+        assert msg2.body == "Body 1"
+
+        # Verify database row count did not increase
+        messages = list(session.scalars(select(OutboundMessage).where(OutboundMessage.application_id == app.id)))
+        assert len(messages) == 1
+
+
+def test_generate_message_regenerate_true_rejects_old_draft_and_creates_new() -> None:
+    session = make_session()
+    app = make_application(session)
+
+    msg1 = make_draft(session, app)
+    assert msg1.status == MessageStatus.draft
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Sub 2", body="Body 2", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        msg2 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=True), DEFAULT_SETTINGS))
+
+    session.refresh(msg1)
+    assert msg1.status == MessageStatus.rejected
+    assert msg2.id != msg1.id
+    assert msg2.status == MessageStatus.draft
+    assert msg2.body == "Body 2"
+
+    messages = list(session.scalars(select(OutboundMessage).where(OutboundMessage.application_id == app.id)))
+    assert len(messages) == 2
+
+
+def test_generate_message_raises_when_approved_message_exists() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+    assert msg.status == MessageStatus.approved
+
+    with pytest.raises(ValueError, match="approved message already exists"):
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+
+
+def test_generate_message_allows_new_draft_after_previous_sent() -> None:
+    session = make_session()
+    app = make_application(session)
+    sent_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Sent subject",
+        body="Sent body",
+        status=MessageStatus.sent,
+    )
+    session.add(sent_msg)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="New sub", body="New body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        new_msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+
+    assert new_msg.id != sent_msg.id
+    assert new_msg.status == MessageStatus.draft
+
+
+def test_generate_message_allows_new_draft_after_previous_rejected() -> None:
+    session = make_session()
+    app = make_application(session)
+    rejected_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Rejected subject",
+        body="Rejected body",
+        status=MessageStatus.rejected,
+    )
+    session.add(rejected_msg)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="New sub", body="New body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        new_msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+
+    assert new_msg.id != rejected_msg.id
+    assert new_msg.status == MessageStatus.draft
+
+
+def test_generate_message_allows_new_draft_after_previous_failed() -> None:
+    session = make_session()
+    app = make_application(session)
+    failed_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Failed subject",
+        body="Failed body",
+        status=MessageStatus.failed,
+    )
+    session.add(failed_msg)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="New sub", body="New body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        new_msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+
+    assert new_msg.id != failed_msg.id
+    assert new_msg.status == MessageStatus.draft
+
+
+def test_followup_generation_idempotent_when_draft_exists() -> None:
+    session = make_session()
+    app = make_application(session)
+    app.follow_up_count = 1
+
+    sent_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Sent",
+        body="Initial sent body",
+        status=MessageStatus.sent,
+    )
+    session.add(sent_msg)
+    session.commit()
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Followup", body="Followup draft body", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        msg1 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+        assert mock_provider.generate.call_count == 1
+
+        msg2 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+        assert mock_provider.generate.call_count == 1
+        assert msg2.id == msg1.id
+
+
+def test_regenerate_approved_message_is_rejected() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg = make_draft(session, app)
+    approve_message(session, msg)
+
+    with pytest.raises(ValueError, match="approved message already exists"):
+        asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=True), DEFAULT_SETTINGS))
+
+
+def test_provider_is_not_called_when_existing_draft_is_returned() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg = make_draft(session, app)
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_build.return_value = mock_provider
+
+        result = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+        assert result.id == msg.id
+        mock_provider.generate.assert_not_called()
+
+
+def test_provider_can_be_called_again_after_regeneration() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg1 = make_draft(session, app)
+
+    with patch("app.services.messaging.build_message_provider") as mock_build:
+        mock_provider = MagicMock()
+        mock_provider.generate = AsyncMock(return_value=GeneratedMessage(subject="Sub 2", body="Body 2", provider="mock"))
+        mock_build.return_value = mock_provider
+
+        msg2 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=True), DEFAULT_SETTINGS))
+        assert mock_provider.generate.call_count == 1
+        assert msg2.id != msg1.id
+
+
+def test_historical_duplicate_drafts_uses_most_recent_deterministically() -> None:
+    session = make_session()
+    app = make_application(session)
+
+    draft1 = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Draft 1",
+        body="Older draft",
+        status=MessageStatus.draft,
+    )
+    draft2 = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        subject="Draft 2",
+        body="Newer draft",
+        status=MessageStatus.draft,
+    )
+    session.add(draft1)
+    session.add(draft2)
+    session.commit()
+
+    result = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
+    assert result.id == draft2.id
+    assert result.body == "Newer draft"
+
 

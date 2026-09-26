@@ -306,6 +306,27 @@ async def generate_message(
     if request.channel == MessageChannel.email and not _has_known_recipient(db, application, request.contact_id):
         raise ValueError("No professional recipient email found. Run Research first.")
 
+    # Phase 3.6.4: Idempotency check for (application_id, channel)
+    existing_active = db.scalar(
+        select(OutboundMessage)
+        .where(OutboundMessage.application_id == application.id)
+        .where(OutboundMessage.channel == request.channel)
+        .where(OutboundMessage.status.in_([MessageStatus.draft, MessageStatus.approved]))
+        .order_by(OutboundMessage.created_at.desc(), OutboundMessage.id.desc())
+        .limit(1)
+    )
+    if existing_active:
+        if existing_active.status == MessageStatus.approved:
+            raise ValueError(
+                "An approved message already exists for this application and channel. "
+                "Send or reject it before generating another one."
+            )
+        if existing_active.status == MessageStatus.draft:
+            if not request.regenerate:
+                return existing_active
+            # Explicit regeneration requested: mark existing draft as rejected
+            reject_message(db, existing_active, notes=f"Superseded by regeneration (Message ID: {existing_active.id})")
+
     # Resolve company and contact
     company: Company | None = (
         db.get(Company, application.company_id) if application.company_id else None
