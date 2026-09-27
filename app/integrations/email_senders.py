@@ -43,7 +43,17 @@ class EmailSender(ABC):
     name: str
 
     @abstractmethod
-    async def send(self, *, to: str, subject: str, body: str, from_addr: str) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        from_addr: str,
+        message_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
         """Send an email. Raises EmailSendError on failure."""
         raise NotImplementedError
 
@@ -56,7 +66,17 @@ class SMTPEmailSender(EmailSender):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def send(self, *, to: str, subject: str, body: str, from_addr: str) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        from_addr: str,
+        message_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
         if not self.settings.smtp_user or not self.settings.smtp_password:
             raise EmailSendError(
                 "SMTP sending requires SMTP_USER and SMTP_PASSWORD. "
@@ -66,6 +86,12 @@ class SMTPEmailSender(EmailSender):
         msg["Subject"] = subject
         msg["From"] = from_addr
         msg["To"] = to
+        if message_id:
+            msg["Message-ID"] = message_id
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
         msg.attach(MIMEText(body, "plain", "utf-8"))
         try:
             with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=15) as server:
@@ -89,8 +115,26 @@ class NullEmailSender(EmailSender):
     def __init__(self) -> None:
         self.sent = []
 
-    async def send(self, *, to: str, subject: str, body: str, from_addr: str) -> None:
-        self.sent.append({"to": to, "subject": subject, "body": body, "from": from_addr})
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        from_addr: str,
+        message_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
+        self.sent.append({
+            "to": to,
+            "subject": subject,
+            "body": body,
+            "from": from_addr,
+            "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "references": references,
+        })
 
 
 class DryRunEmailSender(EmailSender):
@@ -109,8 +153,26 @@ class DryRunEmailSender(EmailSender):
     def __init__(self) -> None:
         self.captured = []
 
-    async def send(self, *, to: str, subject: str, body: str, from_addr: str) -> None:
-        self.captured.append({"to": to, "subject": subject, "body": body, "from": from_addr})
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        from_addr: str,
+        message_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
+        self.captured.append({
+            "to": to,
+            "subject": subject,
+            "body": body,
+            "from": from_addr,
+            "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "references": references,
+        })
         raise DryRunEmailError(
             "[DRY RUN] Email was NOT sent — dry_run_email is enabled.\n"
             f"Would have sent to: {to} | Subject: {subject}\n"

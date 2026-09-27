@@ -37,6 +37,8 @@ class EmailCandidate:
     subject: str
     body_preview: str
     received_at: datetime
+    in_reply_to: str | None = None
+    references: str | None = None
     classification_hint: str | None = None  # heuristic classification
     confidence: float = 0.0
 
@@ -166,6 +168,8 @@ def fetch_replies(
             msg = email_lib.message_from_bytes(raw_bytes)
 
             mid = msg.get("Message-ID", "").strip()
+            in_reply_to_hdr = _decode_header_value(msg.get("In-Reply-To", "")).strip() or None
+            references_hdr = _decode_header_value(msg.get("References", "")).strip() or None
             sender = _decode_header_value(msg.get("From", ""))
             subject = _decode_header_value(msg.get("Subject", ""))
             body = _extract_body(msg)
@@ -184,6 +188,8 @@ def fetch_replies(
                 subject=subject,
                 body_preview=body,
                 received_at=received_at,
+                in_reply_to=in_reply_to_hdr,
+                references=references_hdr,
                 classification_hint=classification,
                 confidence=confidence,
             ))

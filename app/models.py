@@ -242,6 +242,9 @@ class OutboundMessage(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sent_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    in_reply_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    references_header: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     application: Mapped[Application] = relationship(back_populates="messages")
 
@@ -263,6 +266,7 @@ class IncomingResponse(Base):
     source: Mapped[str] = mapped_column(String(80), default="manual")  # "imap" | "manual"
     confirmed: Mapped[bool] = mapped_column(Integer, default=0)  # human confirmed classification
     message_id_header: Mapped[str | None] = mapped_column(String(500), nullable=True, unique=True)  # dedup key
+    in_reply_to_header: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     application: Mapped[Application] = relationship(back_populates="responses")

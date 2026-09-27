@@ -12,6 +12,7 @@ LinkedIn: direct API sending is not available for personal accounts.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -32,6 +33,13 @@ from app.models import (
     ProfessionalEmail,
 )
 from app.schemas import MessageGenerateRequest, MessagePatch
+
+
+def generate_rfc_message_id(settings: Settings) -> str:
+    """Generate a unique RFC 2822 Message-ID header value using UUID4 and configured domain."""
+    sender = settings.smtp_from or settings.smtp_user or settings.candidate_email or "noreply@pfe-automation.local"
+    domain = sender.split("@")[-1].strip() if "@" in sender else "pfe-automation.local"
+    return f"<outbound-{uuid.uuid4()}@{domain}>"
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +381,26 @@ async def generate_message(
         "generation_version": "3.5.3",
     }
 
+    # Phase 3.6.3: Generate RFC Message-ID and resolve threading headers for follow-ups
+    sent_msg_id = generate_rfc_message_id(settings)
+    in_reply_to_hdr: str | None = None
+    references_hdr: str | None = None
+
+    prev_sent = db.scalar(
+        select(OutboundMessage)
+        .where(OutboundMessage.application_id == application.id)
+        .where(OutboundMessage.channel == request.channel)
+        .where(OutboundMessage.status == MessageStatus.sent)
+        .order_by(OutboundMessage.sent_at.desc().nullslast(), OutboundMessage.created_at.desc())
+        .limit(1)
+    )
+    if prev_sent and prev_sent.sent_message_id:
+        in_reply_to_hdr = prev_sent.sent_message_id
+        if prev_sent.references_header:
+            references_hdr = f"{prev_sent.references_header} {prev_sent.sent_message_id}"
+        else:
+            references_hdr = prev_sent.sent_message_id
+
     # Persist draft
     message = OutboundMessage(
         application_id=application.id,
@@ -384,6 +412,9 @@ async def generate_message(
         generation_model=generated.model,
         status=MessageStatus.draft,
         metadata_json=metadata_json,
+        sent_message_id=sent_msg_id,
+        in_reply_to=in_reply_to_hdr,
+        references_header=references_hdr,
     )
     db.add(message)
     db.flush()
@@ -493,12 +524,36 @@ async def send_message(
     from_addr = settings.smtp_from or settings.smtp_user or "noreply@pfe-automation.local"
     subject = message.subject or f"Candidature Stage PFE – {application.position}"
 
+    # Phase 3.6.3: Ensure RFC Message-ID and threading headers are populated
+    if not message.sent_message_id:
+        message.sent_message_id = generate_rfc_message_id(settings)
+
+    if message.in_reply_to is None:
+        prev_sent = db.scalar(
+            select(OutboundMessage)
+            .where(OutboundMessage.application_id == application.id)
+            .where(OutboundMessage.channel == message.channel)
+            .where(OutboundMessage.status == MessageStatus.sent)
+            .where(OutboundMessage.id != message.id)
+            .order_by(OutboundMessage.sent_at.desc().nullslast(), OutboundMessage.created_at.desc())
+            .limit(1)
+        )
+        if prev_sent and prev_sent.sent_message_id:
+            message.in_reply_to = prev_sent.sent_message_id
+            if prev_sent.references_header:
+                message.references_header = f"{prev_sent.references_header} {prev_sent.sent_message_id}"
+            else:
+                message.references_header = prev_sent.sent_message_id
+
     try:
         await sender.send(
             to=recipient,
             subject=subject,
             body=message.body,
             from_addr=from_addr,
+            message_id=message.sent_message_id,
+            in_reply_to=message.in_reply_to,
+            references=message.references_header,
         )
         message.status = MessageStatus.sent
         message.sent_at = _utcnow()

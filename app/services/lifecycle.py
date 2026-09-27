@@ -232,9 +232,20 @@ def record_response(
     """Record an incoming response (from IMAP or manual entry).
 
     Deduplicates by message_id_header when provided.
-    If classification is provided and confidence ≥ 0.8 and confirmed=True, also
-    updates the application response_status and last_response_date.
+    If in_reply_to_header is provided, deterministically auto-matches application by OutboundMessage.sent_message_id.
     """
+    # Phase 3.6.3: Deterministic In-Reply-To auto-match to application
+    if request.in_reply_to_header:
+        matched_outbound = db.scalar(
+            select(OutboundMessage)
+            .where(OutboundMessage.sent_message_id == request.in_reply_to_header)
+            .limit(1)
+        )
+        if matched_outbound:
+            app_match = db.get(Application, matched_outbound.application_id)
+            if app_match:
+                application = app_match
+
     # Dedup check
     if request.message_id_header:
         existing = db.scalar(
@@ -256,6 +267,7 @@ def record_response(
         source=request.source,
         confirmed=request.confirmed,
         message_id_header=request.message_id_header,
+        in_reply_to_header=request.in_reply_to_header,
     )
     db.add(response)
     db.flush()

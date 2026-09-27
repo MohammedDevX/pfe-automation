@@ -119,6 +119,18 @@ def ensure_additive_columns() -> None:
         with engine.begin() as connection:
             if "metadata_json" not in message_columns:
                 connection.execute(text(f"ALTER TABLE outbound_messages ADD COLUMN metadata_json {json_type}"))
+            if "sent_message_id" not in message_columns:
+                connection.execute(text("ALTER TABLE outbound_messages ADD COLUMN sent_message_id VARCHAR(255)"))
+            if "in_reply_to" not in message_columns:
+                connection.execute(text("ALTER TABLE outbound_messages ADD COLUMN in_reply_to VARCHAR(255)"))
+            if "references_header" not in message_columns:
+                connection.execute(text("ALTER TABLE outbound_messages ADD COLUMN references_header TEXT"))
+
+    if "incoming_responses" in existing_tables:
+        response_columns = {column["name"] for column in inspector.get_columns("incoming_responses")}
+        with engine.begin() as connection:
+            if "in_reply_to_header" not in response_columns:
+                connection.execute(text("ALTER TABLE incoming_responses ADD COLUMN in_reply_to_header VARCHAR(255)"))
 
 
 

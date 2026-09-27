@@ -5,6 +5,7 @@ All external API calls (OpenAI, SMTP) are mocked — no real network requests.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ from app.models import (
     Application,
     ApplicationEvent,
     ApplicationStatus,
+    IncomingResponse,
     MessageChannel,
     MessageStatus,
     OutboundMessage,
@@ -1224,5 +1226,252 @@ def test_historical_duplicate_drafts_uses_most_recent_deterministically() -> Non
     result = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email, regenerate=False), DEFAULT_SETTINGS))
     assert result.id == draft2.id
     assert result.body == "Newer draft"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.6.3 Message-ID & Email Threading Tests
+# ---------------------------------------------------------------------------
+
+
+def test_outbound_email_gets_unique_message_id_stored() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+
+    assert msg.sent_message_id is not None
+    assert msg.sent_message_id.startswith("<outbound-")
+    assert msg.sent_message_id.endswith(">")
+
+
+def test_message_id_domain_uses_configured_sender() -> None:
+    session = make_session()
+    app = make_application(session)
+    custom_settings = Settings(
+        smtp_user="recruiter-outreach@company-domain.com",
+        candidate_first_name="Alice",
+        candidate_last_name="Martin",
+    )
+    msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), custom_settings))
+
+    assert msg.sent_message_id is not None
+    assert "@company-domain.com>" in msg.sent_message_id
+
+
+def test_smtp_sender_sets_threading_headers() -> None:
+    sender = SMTPEmailSender(Settings(smtp_user="test@company.com", smtp_password="secret-app-pass"))
+    with patch("smtplib.SMTP") as mock_smtp_cls:
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value.__enter__.return_value = mock_server
+
+        asyncio.run(
+            sender.send(
+                to="recruiter@target.com",
+                subject="Application",
+                body="Hello",
+                from_addr="test@company.com",
+                message_id="<msg-123@company.com>",
+                in_reply_to="<parent-456@company.com>",
+                references="<msg-000@company.com> <parent-456@company.com>",
+            )
+        )
+
+        mock_server.sendmail.assert_called_once()
+        raw_msg_str = mock_server.sendmail.call_args[0][2]
+        assert "Message-ID: <msg-123@company.com>" in raw_msg_str
+        assert "In-Reply-To: <parent-456@company.com>" in raw_msg_str
+        assert "References: <msg-000@company.com> <parent-456@company.com>" in raw_msg_str
+
+
+def test_smtp_sender_omits_none_headers() -> None:
+    sender = SMTPEmailSender(Settings(smtp_user="test@company.com", smtp_password="secret-app-pass"))
+    with patch("smtplib.SMTP") as mock_smtp_cls:
+        mock_server = MagicMock()
+        mock_smtp_cls.return_value.__enter__.return_value = mock_server
+
+        asyncio.run(
+            sender.send(
+                to="recruiter@target.com",
+                subject="Application",
+                body="Hello",
+                from_addr="test@company.com",
+                message_id=None,
+                in_reply_to=None,
+                references=None,
+            )
+        )
+
+        raw_msg_str = mock_server.sendmail.call_args[0][2]
+        assert "In-Reply-To:" not in raw_msg_str
+        assert "References:" not in raw_msg_str
+
+
+def test_followup_threading_headers_chain_correctly() -> None:
+    session = make_session()
+    app = make_application(session)
+
+    # Initial outreach sent
+    msg1 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+    approve_message(session, msg1)
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg1, DEFAULT_SETTINGS, to_email="recruiter@tech.com"))
+    assert msg1.status == MessageStatus.sent
+    assert msg1.sent_message_id is not None
+    assert msg1.in_reply_to is None
+
+    # Follow-up #1
+    app.follow_up_count = 1
+    session.commit()
+    msg2 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+    assert msg2.in_reply_to == msg1.sent_message_id
+    assert msg2.references_header == msg1.sent_message_id
+    assert msg2.sent_message_id not in msg2.references_header
+
+    approve_message(session, msg2)
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg2, DEFAULT_SETTINGS, to_email="recruiter@tech.com"))
+    assert msg2.status == MessageStatus.sent
+
+    # Follow-up #2
+    app.follow_up_count = 2
+    session.commit()
+    msg3 = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+    assert msg3.in_reply_to == msg2.sent_message_id
+    assert msg3.references_header == f"{msg1.sent_message_id} {msg2.sent_message_id}"
+    assert msg3.sent_message_id not in msg3.references_header
+
+
+def test_dry_run_persists_message_id_without_marking_sent() -> None:
+    session = make_session()
+    app = make_application(session)
+    msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+    approve_message(session, msg)
+
+    dry_run_settings = Settings(
+        dry_run_email=True,
+        candidate_first_name="Alice",
+        candidate_last_name="Martin",
+    )
+    asyncio.run(send_message(session, msg, dry_run_settings, to_email="recruiter@tech.com"))
+
+    session.refresh(msg)
+    session.refresh(app)
+    assert msg.sent_message_id is not None
+    assert msg.status == MessageStatus.approved  # not sent
+    assert app.application_status != ApplicationStatus.contacted  # not contacted
+
+
+def test_imap_reader_extracts_threading_headers() -> None:
+    from app.integrations.imap_reader import EmailCandidate, fetch_replies
+    mock_conn = MagicMock()
+    mock_conn.search.return_value = ("OK", [b"1"])
+    mock_raw_email = (
+        b"From: recruiter@corp.com\r\n"
+        b"Subject: Re: Candidature PFE\r\n"
+        b"Message-ID: <reply-100@corp.com>\r\n"
+        b"In-Reply-To: <outbound-001@company.com>\r\n"
+        b"References: <outbound-001@company.com>\r\n"
+        b"Date: Mon, 25 Sep 2026 10:00:00 +0000\r\n"
+        b"\r\n"
+        b"Nous sommes interesser par votre profil."
+    )
+    mock_conn.fetch.return_value = ("OK", [(b"1", mock_raw_email)])
+
+    with patch("imaplib.IMAP4_SSL", return_value=mock_conn):
+        candidates = fetch_replies("imap.test.com", 993, "user@test.com", "pass")
+
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.message_id == "<reply-100@corp.com>"
+    assert c.in_reply_to == "<outbound-001@company.com>"
+    assert c.references == "<outbound-001@company.com>"
+
+
+def test_auto_match_by_in_reply_to_header() -> None:
+    from app.services.lifecycle import record_response
+    from app.schemas import RecordResponseRequest
+
+    session = make_session()
+    app = make_application(session, company="AutoMatch Corp")
+    msg = asyncio.run(generate_message(session, app, MessageGenerateRequest(channel=MessageChannel.email), DEFAULT_SETTINGS))
+    approve_message(session, msg)
+
+    null_sender = NullEmailSender()
+    with patch("app.services.messaging.build_email_sender", return_value=null_sender):
+        asyncio.run(send_message(session, msg, DEFAULT_SETTINGS, to_email="recruiter@automatch.com"))
+
+    # Unrelated dummy application to test matching against correct app
+    other_app = make_application(session, company="Other Corp")
+
+    rec_req = RecordResponseRequest(
+        sender="recruiter@automatch.com",
+        subject="Re: Candidature PFE",
+        body_preview="Oui, disponibilite mardi.",
+        message_id_header="<reply-999@automatch.com>",
+        in_reply_to_header=msg.sent_message_id,
+        source="imap",
+    )
+
+    # Pass other_app as default, but in_reply_to_header should auto-match to app.id!
+    response = record_response(session, other_app, rec_req)
+
+    assert response.application_id == app.id
+    assert response.in_reply_to_header == msg.sent_message_id
+
+
+def test_unknown_in_reply_to_does_not_auto_match() -> None:
+    from app.services.lifecycle import record_response
+    from app.schemas import RecordResponseRequest
+
+    session = make_session()
+    app = make_application(session, company="Manual Match Corp")
+
+    rec_req = RecordResponseRequest(
+        sender="unknown@corp.com",
+        subject="Hello",
+        body_preview="Random email",
+        message_id_header="<random-mid@corp.com>",
+        in_reply_to_header="<unknown-outbound-id@nonexistent.com>",
+        source="imap",
+    )
+
+    response = record_response(session, app, rec_req)
+    assert response.application_id == app.id  # preserved provided application
+    assert response.in_reply_to_header == "<unknown-outbound-id@nonexistent.com>"
+
+
+def test_additive_schema_columns_support_historical_nulls() -> None:
+    from app.main import ensure_additive_columns
+    session = make_session()
+    ensure_additive_columns()
+
+    # Create historical OutboundMessage & IncomingResponse with NULL threading fields
+    app = make_application(session)
+    old_msg = OutboundMessage(
+        application_id=app.id,
+        channel=MessageChannel.email,
+        body="Old message",
+        status=MessageStatus.sent,
+        sent_message_id=None,
+        in_reply_to=None,
+        references_header=None,
+    )
+    old_resp = IncomingResponse(
+        application_id=app.id,
+        received_at=datetime.utcnow(),
+        sender="old@recruiter.com",
+        message_id_header="<old-msg-id@recruiter.com>",
+        in_reply_to_header=None,
+    )
+    session.add(old_msg)
+    session.add(old_resp)
+    session.commit()
+
+    # Ensure they can be queried without error
+    loaded_msg = session.get(OutboundMessage, old_msg.id)
+    loaded_resp = session.get(IncomingResponse, old_resp.id)
+    assert loaded_msg.sent_message_id is None
+    assert loaded_resp.in_reply_to_header is None
+
 
 

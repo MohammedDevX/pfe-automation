@@ -272,6 +272,9 @@ class MessageOut(BaseModel):
     generation_model: str | None
     status: MessageStatus
     metadata_json: dict | None = None
+    sent_message_id: str | None = None
+    in_reply_to: str | None = None
+    references_header: str | None = None
     created_at: datetime
     approved_at: datetime | None
     sent_at: datetime | None
@@ -306,6 +309,7 @@ class RecordResponseRequest(BaseModel):
     source: str = "manual"
     confirmed: bool = False
     message_id_header: str | None = None
+    in_reply_to_header: str | None = None
 
 
 class IncomingResponseOut(BaseModel):
@@ -321,6 +325,8 @@ class IncomingResponseOut(BaseModel):
     confidence: float | None
     source: str
     confirmed: bool
+    message_id_header: str | None = None
+    in_reply_to_header: str | None = None
     created_at: datetime
 
 
