@@ -1,6 +1,8 @@
 name: PFE Job Discovery Engine
 
 on:
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       min_score:
@@ -11,6 +13,10 @@ on:
         description: 'Comma-separated providers (e.g. greenhouse,lever,jobicy)'
         required: false
         default: ''
+
+concurrency:
+  group: discovery-engine
+  cancel-in-progress: false
 
 jobs:
   run-discovery:
@@ -52,10 +58,16 @@ jobs:
           WEB_SEARCH_API_KEY: ${{ secrets.WEB_SEARCH_API_KEY }}
         run: |
           KWARGS=""
-          if [ -n "${{ github.event.inputs.min_score }}" ]; then
-            KWARGS="$KWARGS --min-score ${{ github.event.inputs.min_score }}"
-          fi
-          if [ -n "${{ github.event.inputs.providers }}" ]; then
-            KWARGS="$KWARGS --providers ${{ github.event.inputs.providers }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            KWARGS="--min-score 50"
+          else
+            if [ -n "${{ github.event.inputs.min_score }}" ]; then
+              KWARGS="$KWARGS --min-score ${{ github.event.inputs.min_score }}"
+            else
+              KWARGS="$KWARGS --min-score 50"
+            fi
+            if [ -n "${{ github.event.inputs.providers }}" ]; then
+              KWARGS="$KWARGS --providers ${{ github.event.inputs.providers }}"
+            fi
           fi
           python -m app.cli_discover $KWARGS
