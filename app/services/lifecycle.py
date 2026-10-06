@@ -308,6 +308,44 @@ def confirm_response(
     return response
 
 
+def reassign_response(
+    db: Session,
+    response: IncomingResponse,
+    new_application_id: int,
+) -> IncomingResponse:
+    """Reassign an incoming response to a different application.
+
+    Validates that target application exists, updates application_id, records event,
+    does NOT confirm response or change application status.
+    """
+    new_app = db.get(Application, new_application_id)
+    if not new_app:
+        raise ValueError(f"Application {new_application_id} not found")
+
+    old_app_id = response.application_id
+    response.application_id = new_application_id
+
+    if old_app_id and old_app_id != new_application_id:
+        old_app = db.get(Application, old_app_id)
+        if old_app:
+            _add_event(
+                db, old_app,
+                event_type="response_reassigned_away",
+                notes=f"Response #{response.id} reassigned to App #{new_application_id}",
+            )
+
+    _add_event(
+        db, new_app,
+        event_type="response_reassigned_to",
+        notes=f"Response #{response.id} reassigned from App #{old_app_id}",
+    )
+
+    db.commit()
+    db.refresh(response)
+    return response
+
+
+
 def _apply_classification(
     db: Session,
     application: Application,

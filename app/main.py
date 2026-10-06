@@ -1,3 +1,4 @@
+import html
 import re
 from contextlib import asynccontextmanager
 
@@ -37,6 +38,7 @@ from app.schemas import (
     ContactOut,
     ProfessionalEmailOut,
     RecordResponseRequest,
+    ReassignResponseRequest,
     ResearchRequest,
     ResearchResult,
     ReviewUpdate,
@@ -55,6 +57,7 @@ from app.services.lifecycle import (
     get_due_follow_ups,
     mark_follow_up_sent,
     mark_follow_ups_due,
+    reassign_response,
     record_response,
     schedule_follow_up,
     transition_status,
@@ -510,6 +513,21 @@ def confirm_application_response(
     return confirm_response(db, resp, body.classification)
 
 
+@app.post("/responses/{response_id}/reassign", response_model=IncomingResponseOut)
+def reassign_application_response(
+    response_id: int,
+    body: ReassignResponseRequest,
+    db: Session = Depends(get_db),
+) -> IncomingResponse:
+    resp = db.get(IncomingResponse, response_id)
+    if not resp:
+        raise HTTPException(status_code=404, detail="Response not found")
+    try:
+        return reassign_response(db, resp, body.application_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ===========================================================================
 # IMAP inbox scan endpoint
 # ===========================================================================
@@ -547,10 +565,13 @@ def scan_inbox(
                 "classification_hint": c.classification_hint,
                 "confidence": c.confidence,
                 "body_preview": c.body_preview[:200],
+                "in_reply_to": c.in_reply_to,
+                "references": c.references,
             }
             for c in candidates
         ],
     }
+
 
 
 # ===========================================================================
@@ -748,7 +769,7 @@ def ui_index(db: Session = Depends(get_db)) -> str:
 table{{width:100%;border-collapse:collapse;margin-bottom:2rem}}th,td{{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #e0e0e0}}
 th{{background:#f5f5f5}}a{{color:#1a73e8}}h1,h2{{margin-bottom:1rem}}</style></head>
 <body><h1>📋 PFE Dashboard</h1>
-<p><a href='/docs'>API docs</a> | <a href='/ui/follow-ups'>📅 Follow-up Dashboard</a> | <a href='/ui/discoveries'>🔍 New Discoveries</a></p>
+<p><a href='/ui'>📋 Dashboard</a> | <a href='/ui/discoveries'>🔍 Discoveries</a> | <a href='/ui/follow-ups'>📅 Follow-ups</a> | <a href='/ui/responses'>📬 Responses</a> | <a href='/ui/notion'>📒 Notion CRM</a> | <a href='/docs'>API docs</a></p>
 <h2>Pending Messages</h2>
 <table><thead><tr><th>#</th><th>Company</th><th>Position</th><th>Channel</th>
 <th>Status</th><th>Created</th><th>Action</th></tr></thead>
@@ -875,7 +896,7 @@ th{{background:#f5f5f5}}a{{color:#1a73e8}}h1,h2{{margin-bottom:0.5rem}}
 .card{{background:#f8f9fa;border:1px solid #e0e0e0;border-radius:8px;padding:1rem;margin-bottom:1.5rem}}
 </style></head>
 <body><h1>🔍 New Discoveries & Scheduler Dashboard</h1>
-<p><a href='/ui'>← Dashboard</a> | <a href='/docs'>API docs</a> | Found <b>{len(apps)}</b> opportunities (score ≥ {min_score})</p>
+<p><a href='/ui'>📋 Dashboard</a> | <a href='/ui/discoveries'>🔍 Discoveries</a> | <a href='/ui/follow-ups'>📅 Follow-ups</a> | <a href='/ui/responses'>📬 Responses</a> | <a href='/ui/notion'>📒 Notion CRM</a> | <a href='/docs'>API docs</a> | Found <b>{len(apps)}</b> opportunities (score ≥ {min_score})</p>
 
 <div class='card'>
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
@@ -964,9 +985,368 @@ def ui_follow_ups(db: Session = Depends(get_db)) -> str:
 table{{width:100%;border-collapse:collapse}}th,td{{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #e0e0e0}}
 th{{background:#f5f5f5}}a{{color:#1a73e8}}</style></head>
 <body><h1>📅 Follow-up Dashboard</h1>
-<p><a href='/ui'>← Messages</a> | <a href='/docs'>API docs</a></p>
+<p><a href='/ui'>📋 Dashboard</a> | <a href='/ui/discoveries'>🔍 Discoveries</a> | <a href='/ui/follow-ups'>📅 Follow-ups</a> | <a href='/ui/responses'>📬 Responses</a> | <a href='/ui/notion'>📒 Notion CRM</a> | <a href='/docs'>API docs</a></p>
 <table><thead><tr><th>Company</th><th>Position</th><th>Due</th><th>Follow-up #</th><th>Status</th><th>Action</th></tr></thead>
 <tbody>{rows}</tbody></table></body></html>"""
+
+
+@app.get("/ui/responses", response_class=HTMLResponse, include_in_schema=False)
+def ui_responses(db: Session = Depends(get_db)) -> str:
+    """Response Review UI: Scan inbox, manage pending unconfirmed responses, view confirmed history."""
+    applications = list(db.scalars(select(Application).order_by(Application.company, Application.position)))
+    app_options = "".join(
+        f'<option value="{a.id}">{html.escape(a.company)} — {html.escape(a.position)} (#{a.id})</option>'
+        for a in applications
+    )
+
+    pending_responses = list(db.scalars(
+        select(IncomingResponse)
+        .where(IncomingResponse.confirmed == False)  # noqa: E712
+        .order_by(IncomingResponse.received_at.desc())
+    ))
+
+    confirmed_responses = list(db.scalars(
+        select(IncomingResponse)
+        .where(IncomingResponse.confirmed == True)  # noqa: E712
+        .order_by(IncomingResponse.received_at.desc())
+        .limit(20)
+    ))
+
+    pending_rows = ""
+    for r in pending_responses:
+        app_obj = db.get(Application, r.application_id)
+        app_title = f"{app_obj.company} — {app_obj.position}" if app_obj else f"App #{r.application_id}"
+        
+        outbound_context = ""
+        if r.in_reply_to_header:
+            outbound_msg = db.scalar(
+                select(OutboundMessage)
+                .where(OutboundMessage.sent_message_id == r.in_reply_to_header)
+                .limit(1)
+            )
+            if outbound_msg:
+                outbound_context = (
+                    f"<div class='outbound-context'>"
+                    f"<b>Outbound Message Context:</b><br>"
+                    f"Subject: {html.escape(outbound_msg.subject or 'N/A')}<br>"
+                    f"Sent At: {outbound_msg.sent_at.strftime('%Y-%m-%d %H:%M') if outbound_msg.sent_at else 'N/A'}<br>"
+                    f"Sent Message-ID: <code>{html.escape(outbound_msg.sent_message_id or '')}</code><br>"
+                    f"Body:<br><pre style='white-space:pre-wrap;font-size:0.8rem;background:#fff;padding:4px;border:1px solid #ddd;'>{html.escape(outbound_msg.body[:300])}...</pre>"
+                    f"</div>"
+                )
+
+        class_options = ""
+        current_cls = r.classification.value if r.classification else ""
+        for cls_enum in ResponseStatus:
+            if cls_enum == ResponseStatus.none:
+                continue
+            sel = "selected" if cls_enum.value == current_cls else ""
+            class_options += f'<option value="{cls_enum.value}" {sel}>{cls_enum.value}</option>'
+
+        reassign_options = ""
+        for a in applications:
+            sel = "selected" if a.id == r.application_id else ""
+            reassign_options += f'<option value="{a.id}" {sel}>{html.escape(a.company)} — {html.escape(a.position)} (#{a.id})</option>'
+
+        conf_str = f"({int((r.confidence or 0.0) * 100)}%)" if r.confidence else ""
+        date_str = r.received_at.strftime('%Y-%m-%d %H:%M') if r.received_at else "—"
+
+        pending_rows += f"""
+        <tr id='resp-row-{r.id}'>
+          <td>
+            <b>{date_str}</b><br>
+            <span style='font-size:0.75rem;color:#666;'>Source: {html.escape(r.source)}</span>
+          </td>
+          <td>
+            <a href='/ui/applications/{r.application_id}/apply'><b>{html.escape(app_title)}</b></a><br>
+            <span style='font-size:0.8rem;'>From: {html.escape(r.sender)}</span><br>
+            <span style='font-size:0.8rem;color:#555;'>Subject: {html.escape(r.subject or 'No subject')}</span>
+          </td>
+          <td>
+            <div style='font-size:0.85rem;color:#333;'>
+              <b>Classification:</b> <span style='background:#fff3cd;padding:2px 6px;border-radius:4px;'>{html.escape(current_cls or 'Unclassified')} {conf_str}</span>
+            </div>
+            <details style='margin-top:4px;font-size:0.8rem;'>
+              <summary style='cursor:pointer;color:#1a73e8;'>View details & body</summary>
+              <div style='background:#f9f9f9;padding:6px;border:1px solid #eee;border-radius:4px;margin-top:4px;'>
+                <p style='margin:0 0 4px 0;'><b>Body Preview:</b></p>
+                <pre style='white-space:pre-wrap;font-size:0.8rem;margin:0;'>{html.escape(r.body_preview or '')}</pre>
+                <hr style='border:0;border-top:1px solid #ddd;margin:6px 0;'>
+                <span style='font-size:0.75rem;color:#666;'>
+                  Message-ID: <code>{html.escape(r.message_id_header or 'N/A')}</code><br>
+                  In-Reply-To: <code>{html.escape(r.in_reply_to_header or 'N/A')}</code>
+                </span>
+                {outbound_context}
+              </div>
+            </details>
+          </td>
+          <td>
+            <div style='margin-bottom:6px;'>
+              <select id='reassign-sel-{r.id}' style='font-size:0.8rem;padding:2px 4px;'>{reassign_options}</select>
+              <button onclick='reassignResponse({r.id})' style='font-size:0.75rem;padding:2px 6px;cursor:pointer;'>🔀 Reassign</button>
+            </div>
+            <div>
+              <select id='confirm-cls-{r.id}' style='font-size:0.8rem;padding:2px 4px;'>{class_options}</select>
+              <button onclick='confirmResponse({r.id})' style='background:#1a8c1a;color:#fff;border:none;border-radius:3px;font-size:0.75rem;padding:4px 8px;cursor:pointer;font-weight:bold;'>✅ Confirm</button>
+            </div>
+          </td>
+        </tr>
+        """
+
+    if not pending_rows:
+        pending_rows = "<tr><td colspan='4' style='text-align:center;color:#888;'>No pending unconfirmed responses</td></tr>"
+
+    confirmed_rows = ""
+    for r in confirmed_responses:
+        app_obj = db.get(Application, r.application_id)
+        app_title = f"{app_obj.company} — {app_obj.position}" if app_obj else f"App #{r.application_id}"
+        app_status = app_obj.application_status.value if app_obj else "unknown"
+        cls_val = r.classification.value if r.classification else "confirmed"
+        date_str = r.received_at.strftime('%Y-%m-%d %H:%M') if r.received_at else "—"
+
+        badge_bg = "#d4edda" if cls_val in ("interview invitation", "positive response") else ("#f8d7da" if cls_val == "negative response" else "#e2e3e5")
+        badge_fg = "#155724" if cls_val in ("interview invitation", "positive response") else ("#721c24" if cls_val == "negative response" else "#383d41")
+
+        confirmed_rows += f"""
+        <tr>
+          <td>{date_str}</td>
+          <td><a href='/ui/applications/{r.application_id}/apply'><b>{html.escape(app_title)}</b></a></td>
+          <td>{html.escape(r.sender)}</td>
+          <td>{html.escape(r.subject or 'No subject')}</td>
+          <td><span style='background:{badge_bg};color:{badge_fg};padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:bold;'>{html.escape(cls_val)}</span></td>
+          <td><b>{html.escape(app_status)}</b></td>
+        </tr>
+        """
+
+    if not confirmed_rows:
+        confirmed_rows = "<tr><td colspan='6' style='text-align:center;color:#888;'>No confirmed response history yet</td></tr>"
+
+    return f"""<!DOCTYPE html><html lang='fr'><head><meta charset='UTF-8'>
+<title>PFE — Response Review Inbox</title>
+<style>
+body{{font-family:system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem}}
+table{{width:100%;border-collapse:collapse;margin-bottom:1.5rem}}
+th,td{{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #e0e0e0;vertical-align:top}}
+th{{background:#f5f5f5}}
+a{{color:#1a73e8}}
+h1,h2,h3{{margin-bottom:0.5rem}}
+.card{{background:#f8f9fa;border:1px solid #e0e0e0;border-radius:8px;padding:1rem;margin-bottom:1.5rem}}
+.btn{{padding:0.45rem 0.9rem;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:bold}}
+.btn-primary{{background:#1a73e8;color:#fff}}
+.outbound-context{{background:#eef6fc;border-left:3px solid #1a73e8;padding:6px;margin-top:6px;font-size:0.75rem;color:#333}}
+.candidate-card{{background:#fff;border:1px solid #ccc;border-radius:6px;padding:10px;margin-bottom:10px}}
+</style></head><body>
+<h1>📬 Response Review Inbox</h1>
+<p>
+  <a href='/ui'>📋 Applications</a> |
+  <a href='/ui/discoveries'>🔍 Discoveries</a> |
+  <a href='/ui/follow-ups'>📅 Follow-ups</a> |
+  <a href='/ui/responses'><b>📬 Response Review</b></a> |
+  <a href='/ui/notion'>📒 Notion CRM</a> |
+  <a href='/docs'>API docs</a>
+</p>
+
+<!-- Section A: Inbox Scan -->
+<div class='card'>
+  <div style='display:flex;justify-content:space-between;align-items:center;'>
+    <div>
+      <h3 style='margin:0 0 4px 0;'>📥 IMAP Inbox Scanner</h3>
+      <p style='margin:0;font-size:0.85rem;color:#555;'>Scan your Gmail/IMAP inbox for incoming recruiter replies. Scanning is strictly read-only.</p>
+    </div>
+    <div style='display:flex;align-items:center;gap:8px;'>
+      <label style='font-size:0.85rem;'>Since days:</label>
+      <input id='since-days' type='number' value='30' min='1' max='90' style='width:50px;padding:4px;'>
+      <button id='scan-btn' class='btn btn-primary' onclick='scanInboxNow()'>Scan Inbox Now</button>
+    </div>
+  </div>
+  <div id='scan-status' style='margin-top:8px;font-size:0.85rem;color:#666;'></div>
+  <div id='scanned-candidates' style='margin-top:12px;'></div>
+</div>
+
+<!-- Section B: Pending Unconfirmed Responses -->
+<h2>⏳ Pending Responses ({len(pending_responses)})</h2>
+<p style='font-size:0.85rem;color:#555;'>Ingested responses awaiting human review. Select an application or override classification, then click <b>Confirm</b>.</p>
+<table>
+  <thead>
+    <tr>
+      <th style='width:15%;'>Received</th>
+      <th style='width:30%;'>Application & Sender</th>
+      <th style='width:35%;'>Response Content & Details</th>
+      <th style='width:20%;'>Actions</th>
+    </tr>
+  </thead>
+  <tbody>{pending_rows}</tbody>
+</table>
+
+<!-- Section C: Confirmed Response History -->
+<h2>✅ Confirmed Response History</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Received</th>
+      <th>Application</th>
+      <th>Sender</th>
+      <th>Subject</th>
+      <th>Classification</th>
+      <th>Current App Status</th>
+    </tr>
+  </thead>
+  <tbody>{confirmed_rows}</tbody>
+</table>
+
+<script>
+const appOptionsHtml = `{app_options}`;
+
+async function scanInboxNow() {{
+  const btn = document.getElementById('scan-btn');
+  const status = document.getElementById('scan-status');
+  const container = document.getElementById('scanned-candidates');
+  const days = document.getElementById('since-days').value || 30;
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ Scanning...';
+  status.textContent = 'Connecting to IMAP server and fetching recent messages...';
+  container.innerHTML = '';
+  
+  try {{
+    const res = await fetch('/inbox/scan?since_days=' + days, {{method: 'POST'}});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to scan inbox');
+    
+    status.textContent = 'Found ' + data.count + ' message candidate(s). Review below before ingesting.';
+    if (data.count === 0) {{
+      container.innerHTML = '<p style="color:#888;font-size:0.85rem;">No recent message candidates found in inbox.</p>';
+      return;
+    }}
+    
+    let htmlStr = '';
+    data.candidates.forEach((c, idx) => {{
+      const matchBadge = c.in_reply_to ? '<span style="background:#d4edda;color:#155724;padding:2px 6px;border-radius:3px;font-size:0.75rem;font-weight:bold;">Thread Matched</span>' : '<span style="background:#eee;color:#555;padding:2px 6px;border-radius:3px;font-size:0.75rem;">Unmatched Thread</span>';
+      
+      htmlStr += `
+      <div class="candidate-card" id="cand-${{idx}}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <b>${{escapeHtml(c.sender)}}</b> &nbsp; ${{matchBadge}}<br>
+            <span style="font-size:0.85rem;"><b>Subject:</b> ${{escapeHtml(c.subject || 'No subject')}}</span><br>
+            <span style="font-size:0.75rem;color:#666;">Received: ${{c.received_at}} | Hint: ${{c.classification_hint || 'None'}} (${{Math.round((c.confidence||0)*100)}}%)</span>
+          </div>
+          <button onclick="ingestCandidate(${{idx}})" style="background:#1a73e8;color:#fff;border:none;border-radius:4px;padding:6px 12px;font-size:0.8rem;cursor:pointer;font-weight:bold;">Ingest & Link</button>
+        </div>
+        <div style="margin-top:6px;font-size:0.8rem;color:#444;">
+          <pre style="white-space:pre-wrap;font-size:0.8rem;background:#f8f9fa;padding:6px;border:1px solid #eee;border-radius:4px;margin:4px 0;">${{escapeHtml(c.body_preview || '')}}</pre>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:12px;align-items:center;font-size:0.8rem;">
+          <label><b>Link to Application:</b></label>
+          <select id="cand-app-${{idx}}" style="font-size:0.8rem;padding:3px;">
+            ${{appOptionsHtml}}
+          </select>
+          <label><b>Classification:</b></label>
+          <select id="cand-cls-${{idx}}" style="font-size:0.8rem;padding:3px;">
+            <option value="interview invitation" ${{c.classification_hint==='interview invitation'?'selected':''}}>interview invitation</option>
+            <option value="positive response" ${{c.classification_hint==='positive response'?'selected':''}}>positive response</option>
+            <option value="negative response" ${{c.classification_hint==='negative response'?'selected':''}}>negative response</option>
+            <option value="neutral response" ${{c.classification_hint==='neutral response'?'selected':''}}>neutral response</option>
+            <option value="request for information" ${{c.classification_hint==='request for information'?'selected':''}}>request for information</option>
+            <option value="other" ${{!c.classification_hint?'selected':''}}>other</option>
+          </select>
+        </div>
+        <input type="hidden" id="cand-data-${{idx}}" value='${{escapeAttr(JSON.stringify(c))}}'>
+      </div>`;
+    }});
+    container.innerHTML = htmlStr;
+    
+  }} catch(e) {{
+    status.style.color = '#c62828';
+    status.textContent = 'Scan error: ' + e.message;
+  }} finally {{
+    btn.disabled = false;
+    btn.textContent = 'Scan Inbox Now';
+  }}
+}}
+
+async function ingestCandidate(idx) {{
+  const rawJson = document.getElementById('cand-data-' + idx).value;
+  const cand = JSON.parse(rawJson);
+  const appId = document.getElementById('cand-app-' + idx).value;
+  const cls = document.getElementById('cand-cls-' + idx).value;
+  
+  const payload = {{
+    received_at: cand.received_at,
+    sender: cand.sender,
+    subject: cand.subject,
+    body_preview: cand.body_preview,
+    classification: cls,
+    confidence: cand.confidence,
+    source: "imap",
+    confirmed: false,
+    message_id_header: cand.message_id,
+    in_reply_to_header: cand.in_reply_to
+  }};
+  
+  try {{
+    const res = await fetch('/applications/' + appId + '/responses', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(payload)
+    }});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Ingestion failed');
+    
+    alert('Response ingested successfully into Pending Queue! (confirmed=false)');
+    location.reload();
+  }} catch(e) {{
+    alert('Failed to ingest response: ' + e.message);
+  }}
+}}
+
+async function confirmResponse(respId) {{
+  const cls = document.getElementById('confirm-cls-' + respId).value;
+  try {{
+    const res = await fetch('/responses/' + respId + '/confirm', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{classification: cls}})
+    }});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Confirmation failed');
+    
+    alert('Response confirmed! Application status updated.');
+    location.reload();
+  }} catch(e) {{
+    alert('Failed to confirm response: ' + e.message);
+  }}
+}}
+
+async function reassignResponse(respId) {{
+  const appId = document.getElementById('reassign-sel-' + respId).value;
+  try {{
+    const res = await fetch('/responses/' + respId + '/reassign', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{application_id: parseInt(appId)}})
+    }});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Reassignment failed');
+    
+    alert('Response reassigned to App #' + appId + '!');
+    location.reload();
+  }} catch(e) {{
+    alert('Failed to reassign response: ' + e.message);
+  }}
+}}
+
+function escapeHtml(str) {{
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}}
+function escapeAttr(str) {{
+  if (!str) return '';
+  return String(str).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}}
+</script>
+</body></html>"""
+
 
 
 @app.get("/ui/follow-ups/{application_id}", response_class=HTMLResponse, include_in_schema=False)

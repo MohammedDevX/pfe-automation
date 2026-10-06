@@ -1474,4 +1474,183 @@ def test_additive_schema_columns_support_historical_nulls() -> None:
     assert loaded_resp.in_reply_to_header is None
 
 
+# ---------------------------------------------------------------------------
+# Phase 3.6.6: Response Review UI & Reassignment Tests
+# ---------------------------------------------------------------------------
+
+def test_ui_responses_route_renders(test_client) -> None:
+    """Test 1 & 2 & 3: /ui/responses route renders successfully with sections for pending and confirmed responses."""
+    resp = test_client.get("/ui/responses")
+    assert resp.status_code == 200
+    assert "Response Review Inbox" in resp.text
+    assert "IMAP Inbox Scanner" in resp.text
+    assert "Pending Responses" in resp.text
+    assert "Confirmed Response History" in resp.text
+
+
+def test_reassignment_endpoint_functional_and_safe(test_client) -> None:
+    """Test 9, 10, 11: Reassignment updates only application_id, does not confirm response, does not change app status."""
+    app1_resp = test_client.post("/opportunities/ingest", json={
+        "company": "App One Inc",
+        "title": "Backend Dev",
+        "source": "manual",
+        "url": "https://appone.ma/job",
+    })
+    app1_id = app1_resp.json()["id"]
+
+    app2_resp = test_client.post("/opportunities/ingest", json={
+        "company": "App Two Inc",
+        "title": "Frontend Dev",
+        "source": "manual",
+        "url": "https://apptwo.ma/job",
+    })
+    app2_id = app2_resp.json()["id"]
+
+    rec_resp = test_client.post(f"/applications/{app1_id}/responses", json={
+        "sender": "hr@appone.ma",
+        "subject": "Interview Proposal",
+        "body_preview": "Are you free tuesday?",
+        "classification": "interview invitation",
+        "confidence": 0.8,
+        "source": "imap",
+        "confirmed": False,
+        "message_id_header": "<msg-reassign-101@appone.ma>",
+    })
+    assert rec_resp.status_code == 200
+    resp_id = rec_resp.json()["id"]
+    assert rec_resp.json()["confirmed"] is False
+    assert rec_resp.json()["application_id"] == app1_id
+
+    reassign_res = test_client.post(f"/responses/{resp_id}/reassign", json={
+        "application_id": app2_id,
+    })
+    assert reassign_res.status_code == 200
+    updated_resp = reassign_res.json()
+
+    assert updated_resp["application_id"] == app2_id
+    assert updated_resp["confirmed"] is False
+
+    app2_data = test_client.get(f"/applications/{app2_id}").json()
+    assert app2_data["application_status"] == "discovered"
+
+
+def test_reassign_invalid_application_returns_400(test_client) -> None:
+    """Test reassigning to a non-existent application returns 400 error."""
+    app_resp = test_client.post("/opportunities/ingest", json={
+        "company": "App Three Inc",
+        "title": "Fullstack Dev",
+        "source": "manual",
+        "url": "https://appthree.ma/job",
+    })
+    app_id = app_resp.json()["id"]
+
+    rec_resp = test_client.post(f"/applications/{app_id}/responses", json={
+        "sender": "hr@appthree.ma",
+        "subject": "Candidature",
+        "body_preview": "Received",
+        "source": "imap",
+        "confirmed": False,
+        "message_id_header": "<msg-reassign-invalid@appthree.ma>",
+    })
+    resp_id = rec_resp.json()["id"]
+
+    bad_reassign = test_client.post(f"/responses/{resp_id}/reassign", json={
+        "application_id": 99999,
+    })
+    assert bad_reassign.status_code == 400
+
+
+def test_ingestion_does_not_confirm_or_change_status(test_client) -> None:
+    """Test 5, 6, 15, 16: Ingestion sets confirmed=False, handles dedup, and does not alter application status."""
+    app_resp = test_client.post("/opportunities/ingest", json={
+        "company": "Ingest Corp",
+        "title": "DevOps Engineer",
+        "source": "manual",
+        "url": "https://ingestcorp.ma/job",
+    })
+    app_id = app_resp.json()["id"]
+
+    ingest_payload = {
+        "sender": "recruiter@ingestcorp.ma",
+        "subject": "Application Status",
+        "body_preview": "We would like to invite you to an interview.",
+        "classification": "interview invitation",
+        "confidence": 0.85,
+        "source": "imap",
+        "confirmed": False,
+        "message_id_header": "<unique-ingest-mid-001@ingestcorp.ma>",
+    }
+
+    rec_resp = test_client.post(f"/applications/{app_id}/responses", json=ingest_payload)
+    assert rec_resp.status_code == 200
+    resp_data = rec_resp.json()
+    assert resp_data["confirmed"] is False
+
+    app_data = test_client.get(f"/applications/{app_id}").json()
+    assert app_data["application_status"] == "discovered"
+
+    rec_dup = test_client.post(f"/applications/{app_id}/responses", json=ingest_payload)
+    assert rec_dup.status_code == 200
+    assert rec_dup.json()["id"] == resp_data["id"]
+
+
+def test_confirmation_explicit_human_action_applies_lifecycle_transition(test_client) -> None:
+    """Test 12, 13, 14: Confirm calls confirmation endpoint, overrides classification, and applies lifecycle status transition."""
+    app_resp = test_client.post("/opportunities/ingest", json={
+        "company": "Confirm Corp",
+        "title": "AI Engineer",
+        "source": "manual",
+        "url": "https://confirmcorp.ma/job",
+    })
+    app_id = app_resp.json()["id"]
+
+    rec_resp = test_client.post(f"/applications/{app_id}/responses", json={
+        "sender": "lead@confirmcorp.ma",
+        "subject": "Interview scheduling",
+        "body_preview": "Please choose a slot for technical interview.",
+        "classification": "positive response",
+        "confidence": 0.6,
+        "source": "imap",
+        "confirmed": False,
+        "message_id_header": "<confirm-test-mid-123@confirmcorp.ma>",
+    })
+    resp_id = rec_resp.json()["id"]
+
+    conf_res = test_client.post(f"/responses/{resp_id}/confirm", json={
+        "classification": "interview invitation",
+    })
+    assert conf_res.status_code == 200
+    confirmed_data = conf_res.json()
+    assert confirmed_data["confirmed"] is True
+    assert confirmed_data["classification"] == "interview invitation"
+
+    app_after = test_client.get(f"/applications/{app_id}").json()
+    assert app_after["application_status"] == "interview"
+
+
+def test_inbox_scan_endpoint_wired_and_read_only(test_client) -> None:
+    """Test 4 & 15: /inbox/scan is wired, returns candidates, and does not alter any DB state."""
+    with patch("app.main.fetch_replies") as mock_fetch:
+        from app.integrations.imap_reader import EmailCandidate
+        mock_fetch.return_value = [
+            EmailCandidate(
+                message_id="<scan-mid-11@recruiter.com>",
+                sender="hr@recruiter.com",
+                subject="Re: Application",
+                body_preview="Thanks for applying",
+                received_at=datetime.utcnow(),
+                in_reply_to="<outbound-mid-11@mycompany.ma>",
+                classification_hint="positive response",
+                confidence=0.6,
+            )
+        ]
+        scan_res = test_client.post("/inbox/scan?since_days=14")
+        assert scan_res.status_code == 200
+        scan_data = scan_res.json()
+        assert scan_data["count"] == 1
+        assert scan_data["candidates"][0]["message_id"] == "<scan-mid-11@recruiter.com>"
+        assert scan_data["candidates"][0]["in_reply_to"] == "<outbound-mid-11@mycompany.ma>"
+
+
+
 

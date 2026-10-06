@@ -334,6 +334,11 @@ class ConfirmResponseRequest(BaseModel):
     classification: ResponseStatus
 
 
+class ReassignResponseRequest(BaseModel):
+    application_id: int
+
+
+
 class FollowUpDueItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
