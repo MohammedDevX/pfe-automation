@@ -7,6 +7,7 @@ or corrupting source data.
 Features:
 - Preserves primary keys (id), foreign keys, timestamps, enums, JSON attributes.
 - Idempotent & conflict-aware: Checks if records exist by PK or unique constraint before insert.
+- Synchronizes PostgreSQL primary key sequences (setval) to MAX(id) before commit.
 - Dry-run mode: Performs migration in a transaction and rolls back, reporting metrics.
 - Topological order: Companies -> Contacts -> Professional Emails -> Applications -> Events -> Outbound Messages -> Incoming Responses -> Discovery Runs.
 
@@ -35,6 +36,7 @@ from app.models import (
     OutboundMessage,
     ProfessionalEmail,
 )
+from app.sync_postgres_sequences import sync_postgres_sequences
 
 logger = logging.getLogger("app.migration")
 
@@ -210,11 +212,15 @@ def migrate_database(
             stats_list.append(t_stat)
             print(f"  [OK] {table_name:<25}: Source={t_stat.source_count}, Inserted={t_stat.target_inserted}, Skipped={t_stat.target_skipped}")
 
+        # Synchronize PostgreSQL sequence generators BEFORE commit
+        print("\n[SEQUENCE SYNC] Synchronizing PostgreSQL sequence generators to MAX(id)...")
+        sync_postgres_sequences(target_db, dry_run=dry_run)
+
         if dry_run:
             print("\n[DRY-RUN MODE] Rolling back target transaction.")
             target_db.rollback()
         else:
-            print("\n[MIGRATING] Committing migration to target database...")
+            print("\n[MIGRATING] Committing migration and sequence updates to target database...")
             target_db.commit()
 
         result = MigrationResult(
