@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # Web Search Discovery settings
     web_search_engine: str = "duckduckgo"
     web_search_api_key: str | None = None
+    brave_search_api_key: str | None = None
     web_search_max_queries_per_run: int = 30
     web_search_max_results_per_query: int = 10
     web_search_max_pages_per_query: int = 2

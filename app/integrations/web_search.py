@@ -202,6 +202,80 @@ class CustomApiSearchEngine(SearchEngineAdapter):
         return results
 
 
+class BraveSearchEngine(SearchEngineAdapter):
+    """Search engine adapter using Brave Search API."""
+
+    name = "brave"
+
+    def __init__(self, api_key: str | None = None, endpoint: str | None = None, timeout: float = 10.0):
+        self.api_key = api_key
+        self.endpoint = endpoint or "https://api.search.brave.com/res/v1/web/search"
+        self.timeout = timeout
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        if not self.api_key:
+            return []
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": self.api_key,
+        }
+        params = {"q": query, "count": min(limit, 20)}
+        results: list[SearchResult] = []
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(self.endpoint, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            web_results = data.get("web", {}).get("results", [])
+            for idx, item in enumerate(web_results[:limit], start=1):
+                results.append(
+                    SearchResult(
+                        title=item.get("title") or "",
+                        url=item.get("url") or "",
+                        snippet=item.get("description") or "",
+                        engine=self.name,
+                        rank=idx,
+                    )
+                )
+        return results
+
+
+class MultiSearchEngineAdapter(SearchEngineAdapter):
+    """Composite adapter executing searches across multiple search engine adapters safely."""
+
+    name = "multi"
+
+    def __init__(self, adapters: list[SearchEngineAdapter]):
+        self.adapters = [a for a in adapters if a is not None]
+
+    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        if not self.adapters:
+            return []
+        if len(self.adapters) == 1:
+            try:
+                return await self.adapters[0].search(query, limit=limit)
+            except Exception:
+                return []
+
+        merged_results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+
+        for adapter in self.adapters:
+            try:
+                engine_results = await adapter.search(query, limit=limit)
+                for res in engine_results:
+                    cleaned_u = SearchResultFilter.clean_url(res.url)
+                    target_key = cleaned_u or res.url
+                    if target_key not in seen_urls:
+                        seen_urls.add(target_key)
+                        merged_results.append(res)
+            except Exception:
+                # Isolate failure per engine: continue with remaining engines
+                pass
+
+        return merged_results[:limit]
+
+
 class MockSearchEngine(SearchEngineAdapter):
     """Deterministic mock search engine adapter for unit testing."""
 
@@ -211,8 +285,10 @@ class MockSearchEngine(SearchEngineAdapter):
         self.responses = responses or {}
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        q_lower = query.lower()
         for k, v in self.responses.items():
-            if k in query or query in k:
+            k_lower = k.lower()
+            if k_lower in q_lower or q_lower in k_lower:
                 return v[:limit]
         return []
 
@@ -220,15 +296,35 @@ class MockSearchEngine(SearchEngineAdapter):
 def build_search_engine(settings: Settings) -> SearchEngineAdapter | None:
     """Builds and returns the configured search engine adapter, or None if disabled/unconfigured."""
     engine_type = (settings.web_search_engine or "duckduckgo").lower()
-    if engine_type == "none" or engine_type == "disabled":
+    if engine_type in ("none", "disabled"):
         return None
+
+    adapters: list[SearchEngineAdapter] = []
+
     if engine_type == "custom_api":
-        if not settings.web_search_api_key:
+        if settings.web_search_api_key:
+            adapters.append(CustomApiSearchEngine(settings.web_search_api_key))
+        else:
             return None
-        return CustomApiSearchEngine(settings.web_search_api_key)
-    if engine_type == "duckduckgo":
-        return DuckDuckGoSearchEngine()
-    return DuckDuckGoSearchEngine()
+    elif engine_type == "brave":
+        if getattr(settings, "brave_search_api_key", None):
+            adapters.append(BraveSearchEngine(settings.brave_search_api_key))
+        else:
+            return None
+    elif engine_type == "multi":
+        if settings.web_search_api_key:
+            adapters.append(CustomApiSearchEngine(settings.web_search_api_key))
+        if getattr(settings, "brave_search_api_key", None):
+            adapters.append(BraveSearchEngine(settings.brave_search_api_key))
+        adapters.append(DuckDuckGoSearchEngine())
+    else:
+        adapters.append(DuckDuckGoSearchEngine())
+
+    if not adapters:
+        return None
+    if len(adapters) == 1:
+        return adapters[0]
+    return MultiSearchEngineAdapter(adapters)
 
 
 # ===========================================================================
@@ -304,14 +400,41 @@ class WebSearchQueryGenerator:
                 queries.append(clean_q)
 
         # -------------------------------------------------------------------
-        # TIER 1: High-value explicit PFE + Tech + Morocco (Highest Priority)
+        # TIER 1: High-priority explicit PFE / Internship & Platform Queries
         # -------------------------------------------------------------------
-        for tech in self.CANDIDATE_TECHS:
+        for tech in [".NET", "C#", "ASP.NET Core", "Angular", "Java", "Spring Boot", "React", "Python", "Full Stack", "Backend", "DevOps"]:
             add_q(f'"stage PFE" "{tech}" Maroc')
             add_q(f'"stage PFE" "{tech}" Casablanca')
-            add_q(f'"stage PFE" "{tech}" Rabat')
 
-        for tech in [".NET", "C#", "Java", "Spring Boot", "Angular", "React", "PHP", "Symfony", "Full Stack", "Backend", "DevOps"]:
+        # Public Job Boards & ATS Platforms
+        add_q('site:linkedin.com/jobs/view "stage PFE"')
+        add_q('site:linkedin.com/jobs/view "stage de fin d\'études" ".NET"')
+        add_q('site:linkedin.com/jobs/view "software engineer intern" France')
+        add_q('site:linkedin.com/jobs/view "backend" "internship"')
+
+        add_q('site:welcometothejungle.com "stage" ".NET"')
+        add_q('site:welcometothejungle.com "stage" "backend"')
+        add_q('site:welcometothejungle.com "internship" "software engineer"')
+
+        add_q('site:hellowork.com "stage PFE" ".NET"')
+        add_q('site:hellowork.com "stage" "développeur .NET"')
+        add_q('site:hellowork.com "stage" "développeur backend"')
+
+        add_q('site:jobs.smartrecruiters.com "stage" ".NET"')
+        add_q('site:jobs.smartrecruiters.com "internship" "software engineer"')
+        add_q('site:jobs.smartrecruiters.com "internship" "backend"')
+
+        add_q('site:jobs.ashbyhq.com "internship" "software engineer"')
+        add_q('site:jobs.ashbyhq.com "internship" "backend"')
+
+        add_q('site:apply.workable.com "internship" "software engineer"')
+        add_q('site:apply.workable.com "stage" ".NET"')
+
+        # -------------------------------------------------------------------
+        # TIER 2: Remaining Candidate Technologies + Locations & ATS URL patterns
+        # -------------------------------------------------------------------
+        for tech in self.CANDIDATE_TECHS:
+            add_q(f'"stage PFE" "{tech}" Rabat')
             add_q(f'"stage fin d\'études" "{tech}" Maroc')
 
         add_q('"stage pré-embauche" développeur Casablanca')
@@ -320,7 +443,7 @@ class WebSearchQueryGenerator:
         add_q('inurl:careers "stage PFE" "Spring Boot"')
 
         # -------------------------------------------------------------------
-        # TIER 2: Tech + France / Remote / International Internship
+        # TIER 3: Tech + France / Remote / International Internship
         # -------------------------------------------------------------------
         for tech in [".NET", "C#", "Angular", "Java", "React", "PHP", "backend", "DevOps"]:
             add_q(f'"final year internship" "{tech}" France')
@@ -332,7 +455,7 @@ class WebSearchQueryGenerator:
         add_q('site:boards.greenhouse.io "internship" "backend"')
 
         # -------------------------------------------------------------------
-        # TIER 3: Generic & Custom Criteria Keywords
+        # TIER 4: Generic & Custom Criteria Keywords
         # -------------------------------------------------------------------
         if criteria.keywords or criteria.technologies:
             user_terms = [*criteria.keywords, *criteria.technologies]
@@ -387,7 +510,7 @@ class SearchResultFilter:
             query_params = parse_qs(parsed.query)
             clean_params = {
                 k: v for k, v in query_params.items()
-                if not k.startswith("utm_") and k not in {"ref", "fbclid", "gclid", "_hsenc", "_hsmi"}
+                if not k.lower().startswith("utm") and k.lower() not in {"ref", "fbclid", "gclid", "_hsenc", "_hsmi", "trk", "source"}
             }
             # Rebuild query string
             new_query = "&".join(f"{k}={v[0]}" for k, v in clean_params.items())

@@ -8,14 +8,17 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, Settings
 from app.integrations.web_search import (
+    BraveSearchEngine,
     DuckDuckGoSearchEngine,
     JobPostingExtractor,
     MockSearchEngine,
+    MultiSearchEngineAdapter,
     PageTypeDetector,
     SearchResult,
     SearchResultFilter,
     WebSearchDiscoveryProvider,
     WebSearchQueryGenerator,
+    build_search_engine,
 )
 import app.models
 from app.schemas import OpportunityIn, SearchCriteria
@@ -330,3 +333,197 @@ def test_deduplication_against_existing_provider_pfedaba(db, settings):
             assert res2.duplicates_ignored == 1
 
     asyncio.run(_run())
+
+
+# ===========================================================================
+# 6. Multi-Engine & Search Expansion Tests (Phase 3.7.4A)
+# ===========================================================================
+
+def test_multi_search_engine_adapter_success_merge_and_dedup():
+    engine1 = MockSearchEngine({
+        "test": [
+            SearchResult(title="Job 1", url="https://example.com/job1?utm=x", snippet="S1", engine="m1"),
+            SearchResult(title="Job 2", url="https://example.com/job2", snippet="S2", engine="m1"),
+        ]
+    })
+    engine2 = MockSearchEngine({
+        "test": [
+            SearchResult(title="Job 1 Dup", url="https://example.com/job1", snippet="S1 dup", engine="m2"),
+            SearchResult(title="Job 3", url="https://example.com/job3", snippet="S3", engine="m2"),
+        ]
+    })
+
+    multi = MultiSearchEngineAdapter([engine1, engine2])
+
+    async def _run():
+        results = await multi.search("test", limit=10)
+        # Should merge and deduplicate job1!
+        urls = [r.url for r in results]
+        assert len(results) == 3
+        assert urls == [
+            "https://example.com/job1?utm=x",
+            "https://example.com/job2",
+            "https://example.com/job3",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_multi_search_engine_adapter_one_engine_failure():
+    failing_engine = MagicMock()
+    failing_engine.search = AsyncMock(side_effect=RuntimeError("Search engine 1 down"))
+
+    working_engine = MockSearchEngine({
+        "test": [SearchResult(title="Job 1", url="https://example.com/job1", snippet="S1", engine="m2")]
+    })
+
+    multi = MultiSearchEngineAdapter([failing_engine, working_engine])
+
+    async def _run():
+        results = await multi.search("test", limit=10)
+        assert len(results) == 1
+        assert results[0].title == "Job 1"
+
+    asyncio.run(_run())
+
+
+def test_multi_search_engine_adapter_all_engines_failure():
+    f1 = MagicMock()
+    f1.search = AsyncMock(side_effect=RuntimeError("Engine 1 error"))
+    f2 = MagicMock()
+    f2.search = AsyncMock(side_effect=RuntimeError("Engine 2 error"))
+
+    multi = MultiSearchEngineAdapter([f1, f2])
+
+    async def _run():
+        results = await multi.search("test", limit=10)
+        assert results == []
+
+    asyncio.run(_run())
+
+
+def test_brave_search_engine_missing_key():
+    brave = BraveSearchEngine(api_key=None)
+
+    async def _run():
+        res = await brave.search("test")
+        assert res == []
+
+    asyncio.run(_run())
+
+
+def test_brave_search_engine_success_and_failure():
+    async def _run():
+        brave = BraveSearchEngine(api_key="mock_brave_key")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "web": {
+                "results": [
+                    {
+                        "title": "Brave Job 1",
+                        "url": "https://brave-test.com/job1",
+                        "description": "Brave snippet",
+                    }
+                ]
+            }
+        }
+
+        with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=mock_resp)):
+            res = await brave.search("stage PFE", limit=5)
+            assert len(res) == 1
+            assert res[0].title == "Brave Job 1"
+            assert res[0].engine == "brave"
+
+        # Test failure handling
+        fail_resp = AsyncMock(side_effect=RuntimeError("Brave API 500"))
+        with patch("httpx.AsyncClient.get", new=fail_resp):
+            with pytest.raises(RuntimeError):
+                await brave.search("stage PFE", limit=5)
+
+    asyncio.run(_run())
+
+
+def test_query_generation_platform_queries():
+    gen = WebSearchQueryGenerator()
+    criteria = SearchCriteria()
+    queries = gen.generate_queries(criteria, max_queries=50)
+
+    # Check for platform queries
+    assert any("site:linkedin.com/jobs/view" in q for q in queries)
+    assert any("site:welcometothejungle.com" in q for q in queries)
+    assert any("site:hellowork.com" in q for q in queries)
+    assert any("site:jobs.smartrecruiters.com" in q for q in queries)
+    assert any("site:jobs.ashbyhq.com" in q for q in queries)
+    assert any("site:apply.workable.com" in q for q in queries)
+
+    # Check query bounds and deduplication
+    assert len(queries) <= 50
+    assert len(queries) == len(set(queries))
+
+
+def test_recruiter_search_multi_engine_and_query_expansion(db, settings):
+    from app.models import Company, Application
+    from app.integrations.research_providers import WebSearchRecruiterProvider
+
+    async def _run():
+        provider = WebSearchRecruiterProvider(settings)
+        company = Company(name="Atlas Soft", website="https://atlassoft.ma")
+        app = Application(company="Atlas Soft", position="Dev", job_url="https://atlassoft.ma/job")
+
+        mock_engine = MockSearchEngine({
+            "site:linkedin.com/in": [
+                SearchResult(
+                    title="Sarah Connor - Technical Recruiter - Atlas Soft",
+                    url="https://www.linkedin.com/in/sarah-connor-recruiter",
+                    snippet="Technical Recruiter at Atlas Soft. Email: sarah@atlassoft.ma",
+                    engine="mock",
+                )
+            ]
+        })
+
+        with patch("app.integrations.web_search.build_search_engine", return_value=mock_engine):
+            result = await provider.research(company, app)
+            assert len(result.contacts) >= 1
+            assert result.contacts[0].name == "Sarah Connor"
+            assert result.contacts[0].job_title == "Technical Recruiter"
+
+    asyncio.run(_run())
+
+
+def test_discovery_score_floor_rejection_and_retention():
+    # Test scoring levels & criteria floor
+    from app.schemas import OpportunityIn
+    from app.scoring import score_opportunity
+
+    high_opp = OpportunityIn(
+        source="test",
+        title="Stage PFE Développeur Backend .NET",
+        company="TechCo",
+        url="http://test/high",
+        description="Stage PFE .NET C# Casablanca",
+    )
+    med_opp = OpportunityIn(
+        source="test",
+        title="Junior Developer",
+        company="DevCo",
+        url="http://test/med",
+        description="Junior developer role",
+    )
+    low_opp = OpportunityIn(
+        source="test",
+        title="Senior Director of Architecture",
+        company="BigCo",
+        url="http://test/low",
+        description="10+ years experience required",
+    )
+
+    res_high = score_opportunity(high_opp)
+    res_med = score_opportunity(med_opp)
+    res_low = score_opportunity(low_opp)
+
+    assert res_high.score >= 60
+    assert 35 <= res_med.score < 60
+    assert res_low.score < 35
+

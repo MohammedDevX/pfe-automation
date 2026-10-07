@@ -363,8 +363,13 @@ class WebSearchRecruiterProvider(ResearchProvider):
         company_domain = _domain(company.website) if company.website else None
 
         queries = [
-            f'site:linkedin.com/in "{company_name}" "talent acquisition" OR "recruiter" OR "human resources"',
-            f'site:linkedin.com/in "{company_name}" "engineering manager" OR "head of engineering"',
+            f'site:linkedin.com/in "Talent Acquisition" "{company_name}"',
+            f'site:linkedin.com/in "Technical Recruiter" "{company_name}"',
+            f'site:linkedin.com/in "Recruiter" "{company_name}"',
+            f'site:linkedin.com/in "HR" "{company_name}"',
+            f'site:linkedin.com/in "Campus Recruiter" "{company_name}"',
+            f'site:linkedin.com/in "Engineering Manager" "{company_name}"',
+            f'site:linkedin.com/in "Head of Engineering" "{company_name}"',
         ]
         if company_domain:
             queries.append(f'"{company_name}" recruiter OR "campus recruiter" contact email')

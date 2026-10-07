@@ -30,6 +30,7 @@ async def search_and_persist(
             errors_by_provider[provider.name] = str(e)
 
     new_opportunities = 0
+    new_high_value_opportunities = 0
     duplicates_ignored = 0
     rejected_low_score = 0
     morocco_count = 0
@@ -117,6 +118,8 @@ async def search_and_persist(
         application, was_created = upsert_opportunity(db, opportunity, score)
         if was_created:
             new_opportunities += 1
+            if score.score >= 60:
+                new_high_value_opportunities += 1
             provider_new_counts[provider_key] += 1
             new_application_ids.add(application.id)
         else:

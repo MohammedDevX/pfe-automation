@@ -112,7 +112,7 @@ class SearchCriteria(BaseModel):
     max_pages: int = Field(default=1, ge=1, le=5)
     lever_sites: list[str] = Field(default_factory=lambda: ["blablacar", "scaleway", "malt", "brevo", "contentsquare"])
     greenhouse_boards: list[str] = Field(default_factory=lambda: ["doctolib", "canonical", "datadog", "algolia", "gitlab"])
-    min_score: int = Field(default=50, ge=0, le=100)
+    min_score: int = Field(default=35, ge=0, le=100)
     web_search_max_queries: int = Field(default=30, ge=1, le=100)
     web_search_max_results_per_query: int = Field(default=10, ge=1, le=50)
     web_search_max_pages_per_query: int = Field(default=2, ge=1, le=10)
