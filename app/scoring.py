@@ -162,6 +162,13 @@ NON_TECHNICAL_PATTERNS = [
     # NOT just "strategy" alone — preserves "Technology Strategy Engineer",
     # "Data Strategy", "Cloud Strategy", "DevOps Strategy".
     re.compile(r"\b(?:op[eé]rations?\s+(?:et\s+)?strat[eé]g|operations?\s+(?:and\s+)?strategy)\b", re.IGNORECASE),
+    # --- Phase 3.7.4D additions for non-technical corporate role demotion ---
+    re.compile(r"\b(?:account\s+executive|account\s+specialist|charg[eé][es]?\s+de\s+comptes?)\b", re.IGNORECASE),
+    re.compile(r"\b(?:executive\s+assistant|assistant[es]?\s+de\s+direction|office\s+manager)\b", re.IGNORECASE),
+    re.compile(r"\b(?:kundenservice(?:mitarbeiter)?|customer\s+(?:service|success|care)|client\s+success|service\s+client|charg[eé][es]?\s+de\s+client[eè]le)\b", re.IGNORECASE),
+    re.compile(r"\b(?:pricing|packaging)\b", re.IGNORECASE),
+    re.compile(r"\b(?:pilotage\s+des?\s+flux|centre\s+de\s+contacts?|call\s+center)\b", re.IGNORECASE),
+    re.compile(r"\b(?:audioproth[eé]siste|opticien|m[eé]decin|physician|doctor|nurse|infirmier[es]?)\b", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------

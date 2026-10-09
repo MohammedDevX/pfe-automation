@@ -311,7 +311,7 @@ def build_search_engine(settings: Settings) -> SearchEngineAdapter | None:
             adapters.append(BraveSearchEngine(settings.brave_search_api_key))
         else:
             return None
-    elif engine_type == "multi":
+    elif engine_type in ("multi", "duckduckgo"):
         if settings.web_search_api_key:
             adapters.append(CustomApiSearchEngine(settings.web_search_api_key))
         if getattr(settings, "brave_search_api_key", None):

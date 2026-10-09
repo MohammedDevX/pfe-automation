@@ -107,7 +107,7 @@ class SearchCriteria(BaseModel):
     technologies: list[str] = Field(default_factory=list)
     date_from: date | None = None
     date_to: date | None = None
-    providers: list[str] = Field(default_factory=lambda: ["stagiaires_ma", "greenhouse", "lever", "remotive", "arbeitnow", "jobicy", "weworkremotely", "remoteok", "adzuna", "pfedaba"])
+    providers: list[str] = Field(default_factory=lambda: ["stagiaires_ma", "greenhouse", "lever", "remotive", "arbeitnow", "jobicy", "weworkremotely", "remoteok", "adzuna", "pfedaba", "web_search"])
     results_per_page: int = Field(default=20, ge=1, le=50)
     max_pages: int = Field(default=1, ge=1, le=5)
     lever_sites: list[str] = Field(default_factory=lambda: ["blablacar", "scaleway", "malt", "brevo", "contentsquare"])

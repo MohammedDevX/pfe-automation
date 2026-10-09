@@ -527,3 +527,72 @@ def test_discovery_score_floor_rejection_and_retention():
     assert 35 <= res_med.score < 60
     assert res_low.score < 35
 
+
+def test_web_search_in_default_search_criteria_providers():
+    c = SearchCriteria()
+    assert "web_search" in c.providers
+
+
+def test_explicit_provider_selection_without_web_search():
+    from app.integrations.providers import build_providers
+    c = SearchCriteria(providers=["greenhouse", "lever"])
+    providers = build_providers(c, Settings())
+    names = [p.name for p in providers]
+    assert "greenhouse" in names
+    assert "lever" in names
+    assert "web_search" not in names
+
+
+def test_all_providers_selection_includes_web_search():
+    from app.integrations.providers import build_providers
+    c = SearchCriteria(providers=["all"])
+    providers = build_providers(c, Settings())
+    names = [p.name for p in providers]
+    assert "web_search" in names
+
+
+def test_multi_search_engine_adapter_selection_with_api_keys():
+    st = Settings(web_search_engine="duckduckgo", web_search_api_key="test-key-123")
+    engine = build_search_engine(st)
+    assert engine is not None
+    assert type(engine).__name__ == "MultiSearchEngineAdapter"
+
+
+def test_location_bonus_alone_cannot_qualify_non_technical_roles():
+    from app.schemas import OpportunityIn
+    from app.scoring import score_opportunity
+
+    non_tech_roles = [
+        "doctolib - Account Executive terrain - Metz (x/f/m)",
+        "doctolib - Chargé(e) de comptes - Opticien / Audioprothésiste (x/f/m)",
+        "doctolib - Executive Assistant C-level (x/f/m)",
+        "doctolib - Kundenservicemitarbeiter (x/f/m)",
+    ]
+    for title in non_tech_roles:
+        opp = OpportunityIn(
+            source="greenhouse:doctolib",
+            title=title,
+            company="Doctolib",
+            url="http://test/non-tech",
+            location="Metz, Fes, Paris, France",
+            description="Corporate role mentioning API, React dashboards, SQL reporting.",
+        )
+        res = score_opportunity(opp)
+        assert res.score < 35, f"Expected non-technical role '{title}' to score < 35, got {res.score}"
+
+
+def test_relevant_pfe_internships_pass_scoring_filter():
+    from app.schemas import OpportunityIn
+    from app.scoring import score_opportunity
+
+    pfe_opp = OpportunityIn(
+        source="arbeitnow",
+        title="Software Engineer Intern - Deep Learning & Robotics (Stage PFE)",
+        company="TechCorp",
+        url="http://test/pfe",
+        location="Paris, France",
+        description="Stage PFE 6 mois Python, PyTorch, C++, Docker.",
+    )
+    res = score_opportunity(pfe_opp)
+    assert res.score >= 75
+    assert res.relevance_category in ("EXPLICIT_PFE", "EXPLICIT_INTERNSHIP")
