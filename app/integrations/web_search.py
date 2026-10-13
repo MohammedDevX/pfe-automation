@@ -80,14 +80,20 @@ class DuckDuckGoSearchEngine(SearchEngineAdapter):
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         results: list[SearchResult] = []
+        self.last_error = None  # Reset any previous error
         url = "https://html.duckduckgo.com/html/"
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             try:
                 resp = await client.post(url, data={"q": query}, headers=self.headers)
                 if resp.status_code == 200:
                     results = self._parse_html_results(resp.text, limit)
+                else:
+                    # Non-200 status is considered an error; raise to be caught by outer handler
+                    raise RuntimeError(f"DuckDuckGo HTML endpoint returned {resp.status_code}")
+            except RuntimeError:
+                raise
             except Exception:
-                # Fallback to Lite endpoint if HTML fails
+                # Fallback to Lite endpoint if HTML fails or any exception
                 try:
                     lite_url = "https://lite.duckduckgo.com/lite/"
                     resp_lite = await client.post(lite_url, data={"q": query}, headers=self.headers)

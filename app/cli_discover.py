@@ -18,7 +18,7 @@ from datetime import datetime
 from app.database import Base, SessionLocal, engine, get_settings
 from app.main import ensure_additive_columns
 from app.schemas import SearchCriteria
-from app.services.discovery import search_and_persist
+import app.services.discovery as discovery
 
 logger = logging.getLogger("app.cli_discover")
 
@@ -108,7 +108,7 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
     db = SessionLocal()
     try:
         print("\n🔍 Running discovery engine...")
-        result = asyncio.run(search_and_persist(db, criteria, settings))
+        result = asyncio.run(discovery.search_and_persist(db, criteria, settings))
 
         # 5. Print summary
         if args.json:
@@ -132,7 +132,7 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
             print(f"Jobs Fetched:          {result.jobs_fetched}")
             print(f"Jobs Normalized:       {result.jobs_normalized}")
             print(f"New Opportunities:     {result.new_opportunities}")
-            print(f"High-Value (PFE/Intern):{result.new_high_value_opportunities}")
+            print(f"High-Value (Score >= 60, newly inserted):{result.new_high_value_opportunities}")
             print(f"Duplicates Ignored:    {result.duplicates_ignored}")
             print(f"Low Score Rejected:    {result.rejected_low_score}")
             print(f"Morocco / France / Remote: {result.morocco_count} / {result.france_count} / {result.remote_count}")
