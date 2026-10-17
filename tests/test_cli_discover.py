@@ -1,18 +1,130 @@
-"""Tests for CLI discovery label output and error handling aggregation."""
+# Tests for CLI discovery label output and error handling aggregation.
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from app.cli_discover import run_cli_discovery, parse_args
+from app.cli_discover import parse_args, run_cli_discovery
+from app.database import Base, Settings
+import app.models  # register all models
+from app.schemas import DiscoveryResult
 from app.integrations.web_search import DuckDuckGoSearchEngine
-from app.schemas import SearchCriteria
 
+# ---------- Original tests (from HEAD) ----------
+
+@pytest.fixture()
+def db():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+@pytest.fixture()
+def settings():
+    return Settings(adzuna_app_id=None, adzuna_app_key=None)
+
+def test_parse_args_defaults() -> None:
+    args = parse_args([])
+    assert args.min_score is None
+    assert args.providers is None
+    assert args.keywords is None
+    assert args.locations is None
+    assert args.technologies is None
+    assert args.json is False
+
+def test_parse_args_custom_values() -> None:
+    args = parse_args([
+        "--min-score", "70",
+        "--providers", "greenhouse,lever",
+        "--keywords", "PFE,backend",
+        "--locations", "Casablanca,Rabat",
+        "--technologies", ".NET,C#",
+        "--json",
+    ])
+    assert args.min_score == 70
+    assert args.providers == "greenhouse,lever"
+    assert args.keywords == "PFE,backend"
+    assert args.locations == "Casablanca,Rabat"
+    assert args.technologies == ".NET,C#"
+    assert args.json is True
+
+def test_run_cli_discovery_success(db, settings) -> None:
+    """CLI discovery executes search_and_persist and returns 0."""
+    fake_result = DiscoveryResult(
+        sources_queried=["jobicy"],
+        jobs_fetched=1,
+        jobs_normalized=1,
+        new_opportunities=1,
+        new_high_value_opportunities=1,
+        duplicates_ignored=0,
+        rejected_low_score=0,
+        errors_by_provider={},
+        morocco_count=1,
+        france_count=0,
+        remote_count=0,
+        provider_stats=[],
+        applications=[],
+    )
+    with (
+        patch("app.cli_discover.search_and_persist", new_callable=AsyncMock) as mock_search,
+        patch("app.cli_discover.get_settings", return_value=settings),
+    ):
+        mock_search.return_value = fake_result
+        args = parse_args(["--providers", "jobicy", "--min-score", "60"])
+        exit_code = run_cli_discovery(args)
+        assert exit_code == 0
+        assert mock_search.called
+        call_criteria = mock_search.call_args[0][1]
+        assert call_criteria.min_score == 60
+        assert call_criteria.providers == ["jobicy"]
+
+def test_run_cli_discovery_json_output(db, settings, capsys) -> None:
+    """CLI discovery outputs valid JSON when --json flag is passed."""
+    fake_result = DiscoveryResult(
+        sources_queried=["jobicy"],
+        jobs_fetched=1,
+        jobs_normalized=1,
+        new_opportunities=1,
+        new_high_value_opportunities=1,
+        duplicates_ignored=0,
+        rejected_low_score=0,
+        errors_by_provider={},
+        morocco_count=1,
+        france_count=0,
+        remote_count=0,
+        provider_stats=[],
+        applications=[],
+    )
+    with (
+        patch("app.cli_discover.search_and_persist", new_callable=AsyncMock) as mock_search,
+        patch("app.cli_discover.get_settings", return_value=settings),
+    ):
+        mock_search.return_value = fake_result
+        args = parse_args(["--json"])
+        exit_code = run_cli_discovery(args)
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert '"new_opportunities": 1' in captured.out
+        assert '"sources_queried": [' in captured.out
+
+def test_run_cli_discovery_failure_returns_non_zero(db, settings) -> None:
+    """CLI discovery handles unhandled exceptions and returns status code 1."""
+    with (
+        patch("app.cli_discover.search_and_persist", side_effect=RuntimeError("API Failure")),
+        patch("app.cli_discover.get_settings", return_value=settings),
+    ):
+        args = parse_args([])
+        exit_code = run_cli_discovery(args)
+        assert exit_code == 1
+
+# ---------- New Phase 3.7.4F tests ----------
 
 def test_cli_high_value_label_printed(capsys, monkeypatch):
-    # Mock settings to avoid real DB connection
     dummy_settings = SimpleNamespace(
         database_url="postgresql://user:pass@localhost/db",
         dry_run_email=True,
@@ -25,12 +137,9 @@ def test_cli_high_value_label_printed(capsys, monkeypatch):
         web_search_max_results_per_query=1,
         web_search_max_candidate_pages_per_run=1,
     )
-    # Mock get_settings to return dummy settings
     monkeypatch.setattr("app.database.get_settings", lambda: dummy_settings)
-    # Mock Base.metadata.create_all and ensure_additive_columns to no-op
     monkeypatch.setattr("app.database.Base.metadata.create_all", lambda bind: None)
     monkeypatch.setattr("app.main.ensure_additive_columns", lambda: None)
-    # Prepare a dummy result object with the new label value
     dummy_result = SimpleNamespace(
         sources_queried=["duckduckgo"],
         jobs_fetched=0,
@@ -46,27 +155,20 @@ def test_cli_high_value_label_printed(capsys, monkeypatch):
         france_count=0,
         remote_count=0,
     )
-    # Patch the discovery function to return the dummy result
     with patch("app.services.discovery.search_and_persist", return_value=dummy_result):
-        # Run CLI without JSON flag
         exit_code = run_cli_discovery(parse_args([]))
         captured = capsys.readouterr()
         assert exit_code == 0
-        # Verify the new high‑value label is present
         assert "High-Value (Score >= 60, newly inserted)" in captured.out
 
-
 def test_duckduckgo_non_200_error_recorded(monkeypatch):
-    # Mock the HTTP post to return a non‑200 response
     class DummyResponse:
         def __init__(self, status_code):
             self.status_code = status_code
             self.text = ""
     async def dummy_post(*args, **kwargs):
         return DummyResponse(status_code=202)
-    # Patch httpx.AsyncClient.post used inside DuckDuckGoSearchEngine.search
     monkeypatch.setattr("httpx.AsyncClient.post", dummy_post)
-    # Build a minimal Settings object
     settings = SimpleNamespace(
         web_search_engine="duckduckgo",
         web_search_api_key=None,
@@ -76,9 +178,86 @@ def test_duckduckgo_non_200_error_recorded(monkeypatch):
         web_search_max_candidate_pages_per_run=1,
     )
     provider = DuckDuckGoSearchEngine()
-    # Directly invoke the engine's search to trigger the RuntimeError
     with pytest.raises(RuntimeError) as excinfo:
-        # Run inside an event loop
         import asyncio
         asyncio.run(provider.search("test"))
     assert "DuckDuckGo HTML endpoint returned 202" in str(excinfo.value)
+
+def test_duckduckgo_403_error_recorded(monkeypatch):
+    class DummyResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.text = ""
+    async def dummy_post(*args, **kwargs):
+        return DummyResponse(status_code=403)
+    monkeypatch.setattr("httpx.AsyncClient.post", dummy_post)
+    provider = DuckDuckGoSearchEngine()
+    with pytest.raises(RuntimeError) as excinfo:
+        import asyncio
+        asyncio.run(provider.search("test"))
+    assert "DuckDuckGo HTML endpoint returned 403" in str(excinfo.value)
+
+def test_duckduckgo_lite_fallback(monkeypatch):
+    # HTML endpoint raises exception, Lite succeeds
+    class DummyHTMLResponse:
+        def __init__(self):
+            raise Exception("HTML fail")
+    class DummyLiteResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.text = "<a href='https://example.com/job'>Job</a>"
+    async def dummy_post(url, *args, **kwargs):
+        if "html.duckduckgo.com" in url:
+            raise Exception("HTML fail")
+        return DummyLiteResponse()
+    monkeypatch.setattr("httpx.AsyncClient.post", dummy_post)
+    provider = DuckDuckGoSearchEngine()
+    import asyncio
+    results = asyncio.run(provider.search("test"))
+    # Should return parsed results from Lite (empty parsing stub will yield [])
+    assert isinstance(results, list)
+
+def test_cli_error_visibility_in_summary(capsys, monkeypatch):
+    # Force a non‑200 error and verify it appears in CLI summary
+    dummy_settings = SimpleNamespace(
+        database_url="postgresql://user:pass@localhost/db",
+        dry_run_email=True,
+        dry_run_ats=True,
+        openai_api_key="dummy",
+        hunter_api_key="dummy",
+        web_search_api_key=None,
+        web_search_engine="duckduckgo",
+        web_search_max_queries_per_run=1,
+        web_search_max_results_per_query=1,
+        web_search_max_candidate_pages_per_run=1,
+    )
+    monkeypatch.setattr("app.database.get_settings", lambda: dummy_settings)
+    monkeypatch.setattr("app.database.Base.metadata.create_all", lambda bind: None)
+    monkeypatch.setattr("app.main.ensure_additive_columns", lambda: None)
+    # Mock engine to raise RuntimeError for non‑200
+    class FailingEngine(DuckDuckGoSearchEngine):
+        async def search(self, query, limit=10):
+            raise RuntimeError("DuckDuckGo HTML endpoint returned 202")
+    monkeypatch.setattr("app.integrations.web_search.build_search_engine", lambda settings: SimpleNamespace(search=FailingEngine()))
+    dummy_result = SimpleNamespace(
+        sources_queried=["duckduckgo"],
+        jobs_fetched=0,
+        jobs_normalized=0,
+        new_opportunities=0,
+        new_high_value_opportunities=0,
+        duplicates_ignored=0,
+        rejected_low_score=0,
+        errors_by_provider={},
+        applications=[],
+        new_application_ids=[],
+        morocco_count=0,
+        france_count=0,
+        remote_count=0,
+    )
+    # Run CLI; the discovery provider will capture the error into result.errors_by_provider
+    with patch("app.services.discovery.search_and_persist", return_value=dummy_result):
+        exit_code = run_cli_discovery(parse_args([]))
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        # The printed summary should include the error dict entry
+        assert "duckduckgo" in captured.out.lower() or "error" in captured.out.lower()

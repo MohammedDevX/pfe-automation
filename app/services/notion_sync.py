@@ -17,11 +17,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.integrations.notion_crm import NotionImportRecord, build_notion_provider
 from app.models import Application, ApplicationEvent, ApplicationStatus
 from app.scoring import score_opportunity
+from app.utils import canonicalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -69,41 +71,56 @@ def _find_existing(db: Session, record: NotionImportRecord) -> Application | Non
     if opp is None:
         return None
 
-    clauses = []
-
     # 2. Canonical job URL (only if it is a real job URL, not our synthetic notion.so fallback).
     url_str = str(opp.url)
     if "notion.so/" not in url_str:
+        canon_target = canonicalize_url(url_str)
         url_clean = url_str.rstrip("/")
-        clauses.append(
-            or_(
-                Application.job_url == url_str,
-                Application.job_url == url_clean,
-                Application.job_url == url_clean + "/",
+        existing = db.scalar(
+            select(Application).where(
+                or_(
+                    Application.job_url == url_str,
+                    Application.job_url == canon_target,
+                    Application.job_url == url_clean,
+                    Application.job_url == url_clean + "/",
+                )
             )
         )
+        if existing:
+            return existing
+
+        # Fallback canonical URL scan across stored records if exact clauses missed due to URL variations
+        all_apps = db.scalars(select(Application)).all()
+        for app in all_apps:
+            if app.job_url and "notion.so/" not in app.job_url and canonicalize_url(app.job_url) == canon_target:
+                return app
 
     # 3. source + external_id
     if opp.external_id:
-        clauses.append(
-            (Application.source == opp.source)
-            & (Application.external_id == opp.external_id)
+        existing = db.scalar(
+            select(Application).where(
+                (Application.source == opp.source)
+                & (Application.external_id == opp.external_id)
+            )
         )
+        if existing:
+            return existing
 
     # 4. Normalized fingerprint: company + title + location
     norm_company = opp.company.strip().lower()
     norm_position = opp.title.strip().lower()
     norm_location = ""
-    clauses.append(
-        (func.lower(Application.company) == norm_company)
-        & (func.lower(Application.position) == norm_position)
-        & (func.lower(func.coalesce(Application.location, "")) == norm_location)
+    existing = db.scalar(
+        select(Application).where(
+            (func.lower(Application.company) == norm_company)
+            & (func.lower(Application.position) == norm_position)
+            & (func.lower(func.coalesce(Application.location, "")) == norm_location)
+        )
     )
+    if existing:
+        return existing
 
-    if not clauses:
-        return None
-
-    return db.scalar(select(Application).where(or_(*clauses)))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +181,7 @@ def import_from_notion(
         opp = record.opportunity
         assert opp is not None  # guaranteed by skip_reason logic above
 
-        # Determine action: NEW or MATCH.
+        # Attempt to find an existing application.
         existing = _find_existing(db, record)
 
         if existing is not None:
@@ -172,12 +189,11 @@ def import_from_notion(
             action = "MATCH"
 
             if not dry_run:
-                # Update notion_page_id (always — this is the primary purpose).
+                # Always update notion_page_id.
                 existing.notion_page_id = record.page_data.notion_page_id
 
-                # Patch limited fields: only overwrite if Notion value is non-null.
+                # Patch limited fields: only overwrite if Notion provides a non‑null value.
                 if record.mapped_status is not None and existing.application_status == ApplicationStatus.discovered:
-                    # Only auto-update status if the record is still in the default state.
                     existing.application_status = record.mapped_status
                 if record.mapped_contact_date is not None and existing.contact_date is None:
                     existing.contact_date = record.mapped_contact_date
@@ -187,8 +203,9 @@ def import_from_notion(
                     existing.next_follow_up = record.mapped_next_follow_up
                 if record.mapped_follow_up_count is not None and existing.follow_up_count == 0:
                     existing.follow_up_count = record.mapped_follow_up_count
+
                 # Append Notion notes without overwriting existing notes.
-                if opp.notes:
+                if opp and opp.notes:
                     current_notes = existing.notes or ""
                     if "source:notion_crm" not in current_notes:
                         existing.notes = (current_notes + " | " + opp.notes).strip(" |")
@@ -228,16 +245,43 @@ def import_from_notion(
                 if record.mapped_status is not None:
                     app_record.application_status = record.mapped_status
 
-                db.add(app_record)
-                db.flush()
-                db.add(
-                    ApplicationEvent(
-                        application_id=app_record.id,
-                        event_type="imported_from_notion",
-                        channel="notion_crm",
-                        notes=f"Notion page {record.page_data.notion_page_id}",
+                try:
+                    with db.begin_nested():
+                        db.add(app_record)
+                        db.flush()
+                except IntegrityError as exc:
+                    # Savepoint rolled back. Check if a duplicate opportunity already exists in DB
+                    conflicting = _find_existing(db, record)
+                    if conflicting is not None:
+                        result.new_imported -= 1
+                        result.matched_existing += 1
+                        action = "MATCH"
+                        conflicting.notion_page_id = record.page_data.notion_page_id
+                        if record.mapped_status is not None and conflicting.application_status == ApplicationStatus.discovered:
+                            conflicting.application_status = record.mapped_status
+                        if record.mapped_contact_date is not None and conflicting.contact_date is None:
+                            conflicting.contact_date = record.mapped_contact_date
+                        if record.mapped_last_contact is not None and conflicting.last_contact is None:
+                            conflicting.last_contact = record.mapped_last_contact
+                        if record.mapped_next_follow_up is not None and conflicting.next_follow_up is None:
+                            conflicting.next_follow_up = record.mapped_next_follow_up
+                        if record.mapped_follow_up_count is not None and conflicting.follow_up_count == 0:
+                            conflicting.follow_up_count = record.mapped_follow_up_count
+                        if opp and opp.notes:
+                            current_notes = conflicting.notes or ""
+                            if "source:notion_crm" not in current_notes:
+                                conflicting.notes = (current_notes + " | " + opp.notes).strip(" |")
+                    else:
+                        raise exc
+                else:
+                    db.add(
+                        ApplicationEvent(
+                            application_id=app_record.id,
+                            event_type="imported_from_notion",
+                            channel="notion_crm",
+                            notes=f"Notion page {record.page_data.notion_page_id}",
+                        )
                     )
-                )
 
         if len(result.preview) < preview_limit:
             result.preview.append({

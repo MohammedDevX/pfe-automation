@@ -19,6 +19,7 @@ from app.database import Base, SessionLocal, engine, get_settings
 from app.main import ensure_additive_columns
 from app.schemas import SearchCriteria
 import app.services.discovery as discovery
+search_and_persist = discovery.search_and_persist
 
 logger = logging.getLogger("app.cli_discover")
 
@@ -108,7 +109,7 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
     db = SessionLocal()
     try:
         print("\n🔍 Running discovery engine...")
-        result = asyncio.run(discovery.search_and_persist(db, criteria, settings))
+        result = asyncio.run(search_and_persist(db, criteria, settings))
 
         # 5. Print summary
         if args.json:

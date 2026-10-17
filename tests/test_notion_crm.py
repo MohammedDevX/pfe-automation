@@ -31,7 +31,8 @@ def setup_db():
             (Application.company.like('%TestCo%')) |
             (Application.company.like('%CloudCorp%')) |
             (Application.company.like('%PreserveCo%')) |
-            (Application.company.like('%Acme%'))
+            (Application.company.like('%Acme%')) |
+            (Application.company == 'E-AMBITION')
         ).delete(synchronize_session=False)
         db.commit()
     finally:
