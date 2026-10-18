@@ -71,3 +71,10 @@ jobs:
             fi
           fi
           python -m app.cli_discover $KWARGS
+      - name: Upload discovery metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovery-metrics
+          path: tmp/metrics_*.json
+          if-no-files-found: warn

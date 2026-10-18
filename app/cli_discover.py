@@ -1,4 +1,5 @@
-"""CLI entrypoint for running the PFE Job Automation discovery engine.
+"""
+CLI entrypoint for running the PFE Job Automation discovery engine.
 
 Executes the discovery engine directly from the command line without starting
 the FastAPI server or the background scheduler.
@@ -9,15 +10,20 @@ Usage:
     python app/cli_discover.py --providers greenhouse,lever --keywords backend,.net
 """
 
+
 import argparse
 import asyncio
 import logging
 import sys
+import uuid
 from datetime import datetime
+from pathlib import Path
 
 from app.database import Base, SessionLocal, engine, get_settings
 from app.main import ensure_additive_columns
+from app.models import DiscoveryRun, DiscoveryRunStatus
 from app.schemas import SearchCriteria
+from app.metrics_report import write_metrics_report
 import app.services.discovery as discovery
 search_and_persist = discovery.search_and_persist
 
@@ -101,19 +107,61 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
 
     criteria = SearchCriteria(**kwargs)
 
-    # 3. Initialize DB schema
+    # 3. Initialise DB schema
     Base.metadata.create_all(bind=engine)
     ensure_additive_columns()
 
-    # 4. Execute existing discovery engine
     db = SessionLocal()
+    run_rec = None
     try:
+        # 4. Create a dedicated DiscoveryRun record for this CLI execution
+        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        run_rec = DiscoveryRun(
+            run_id=run_id,
+            started_at=datetime.utcnow(),  # naive UTC per project convention
+            status=DiscoveryRunStatus.running,
+            errors_json={"trigger_source": "CLI"},
+        )
+        db.add(run_rec)
+        db.commit()
+        db.refresh(run_rec)
+
         print("\n🔍 Running discovery engine...")
         result = asyncio.run(search_and_persist(db, criteria, settings))
 
-        # 5. Print summary
+        # 5. Populate the DiscoveryRun with metrics from DiscoveryResult
+        sources_attempted = len(result.sources_queried)
+        sources_failed = len(result.errors_by_provider)
+        sources_succeeded = max(0, sources_attempted - sources_failed)
+
+        run_rec.status = (
+            DiscoveryRunStatus.partial if result.errors_by_provider else DiscoveryRunStatus.completed
+        )
+        run_rec.finished_at = datetime.utcnow()
+        run_rec.sources_attempted = sources_attempted
+        run_rec.sources_failed = sources_failed
+        run_rec.sources_succeeded = sources_succeeded
+        run_rec.jobs_fetched = result.jobs_fetched
+        run_rec.jobs_normalized = result.jobs_normalized
+        run_rec.new_opportunities = result.new_opportunities
+        run_rec.new_high_value_opportunities = result.new_high_value_opportunities
+        run_rec.duplicates_ignored = result.duplicates_ignored
+        run_rec.rejected_low_score = result.rejected_low_score
+        run_rec.provider_metrics_json = [p.model_dump() for p in result.provider_stats] or None
+        run_rec.errors_json = result.errors_by_provider or None
+        db.commit()
+        db.refresh(run_rec)
+
+        # 6. Generate metrics report (do not let failures affect CLI exit)
+        try:
+            write_metrics_report(run_rec)
+        except Exception as e:  # pragma: no cover – exercised by deterministic‑failure test
+            logger.error("Metrics report generation failed: %s", e)
+
+        # 7. Print human‑readable summary (unchanged from original)
         if args.json:
             import json
+
             summary_dict = {
                 "sources_queried": result.sources_queried,
                 "jobs_fetched": result.jobs_fetched,
@@ -155,6 +203,25 @@ def run_cli_discovery(args: argparse.Namespace | None = None) -> int:
         return 0
 
     except Exception as exc:
+        # 8. Discovery failed – persist failure info safely
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        if run_rec is not None:
+            try:
+                run_rec.status = DiscoveryRunStatus.failed
+                run_rec.finished_at = datetime.utcnow()
+                run_rec.errors_json = {"error": str(exc), "trigger_source": "CLI"}
+                db.add(run_rec)
+                db.commit()
+                db.refresh(run_rec)
+                try:
+                    write_metrics_report(run_rec)
+                except Exception as e:
+                    logger.error("Metrics report generation after failure failed: %s", e)
+            except Exception as e2:
+                logger.error("Failed to persist failed DiscoveryRun: %s", e2)
         print(f"\n❌ Discovery run failed with error: {exc}", file=sys.stderr)
         logger.exception("CLI discovery execution error")
         return 1
